@@ -433,7 +433,8 @@ function T:Render(plate,items)
     local rowsLimit=h.castStrip and 1 or cfg.rows
     local n=math.min(#items,cfg.perRow*rowsLimit)
     local w,height=cfg.size,cfg.keepAspect and cfg.size or cfg.height
-    local columns=math.min(n,cfg.perRow); local rows=math.ceil(n/cfg.perRow)
+    local columns=h.castStrip and cfg.perRow or math.min(n,cfg.perRow)
+    local rows=math.ceil(n/cfg.perRow)
     local width=columns*w+(columns-1)*cfg.spacing
     -- Position resource numbers independently per icon; existing entries keep
     -- their original default (below for spells/autoattack, overlaid for resources).
@@ -441,6 +442,21 @@ function T:Render(plate,items)
     for _,entry in ipairs(panel.entries) do entriesById[entry.uid]=entry end
     local resourceValues={}
     local abovePadding,belowPadding=0,0
+    if h.castStrip then
+        -- Keep the mover dimensions stable when icons disappear so a centered
+        -- or right-anchored mover does not pull the fixed first slot sideways.
+        local pad=cfg.count.size+4
+        local auto=panel.autoAttack
+        if auto.showResource then
+            if auto.resourcePosition=='TOP' then abovePadding=pad else belowPadding=pad end
+        end
+        for _,entry in ipairs(panel.entries) do
+            if entry.enabled and (entry.showResource or (entry.kind=='resource' and cfg.count.show)) then
+                if entry.resourcePosition=='TOP' then abovePadding=pad
+                elseif entry.resourcePosition=='BOTTOM' or entry.kind~='resource' then belowPadding=pad end
+            end
+        end
+    end
     for i=1,n do
         local item=items[i]
         local entry=entriesById[item.id]
@@ -458,7 +474,8 @@ function T:Render(plate,items)
     local rowHeight=height+abovePadding+belowPadding
     local totalHeight=rows*rowHeight+(rows-1)*cfg.spacing
     local anchor=plate.Health or plate
-    local layout=tostring(self.revision)..':'..n..':'..abovePadding..':'..belowPadding
+    local layoutSize=h.castStrip and columns or n
+    local layout=tostring(self.revision)..':'..layoutSize..':'..abovePadding..':'..belowPadding
     if h.layout~=layout or h.anchor~=anchor or h.scaleLayout~=cfg.scale then
         -- ElvUI's mover follows the size of its registered parent. Keep its
         -- visible box aligned with the full icon group in config mode.

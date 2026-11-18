@@ -30,12 +30,17 @@ local function recycle(state,icon)
     state.pool[#state.pool+1]=icon
 end
 
-local function liftCastIcon(icon)
+local function liftCastIcon(h,icon)
+    local highest=h.frame:GetFrameLevel()
+    for _,other in ipairs(h.icons) do
+        highest=math.max(highest,other:GetFrameLevel(),(other.textLayer or other):GetFrameLevel())
+    end
+    local offset=highest-icon:GetFrameLevel()+castLevelOffset
     local layers={}
     for _,frame in ipairs({icon,icon.cooldown,icon.textLayer}) do
         layers[#layers+1]={frame=frame,level=frame:GetFrameLevel()}
     end
-    for _,layer in ipairs(layers) do layer.frame:SetFrameLevel(layer.level+castLevelOffset) end
+    for _,layer in ipairs(layers) do layer.frame:SetFrameLevel(layer.level+offset) end
     icon.stripLayers=layers
 end
 
@@ -156,7 +161,7 @@ function T:OnStripCast(spellId,spellName)
                 state.suppressed[itemKey(icon.abilityState)]=started+castTime
                 state.departures[icon]={start=started,x=icon.stripX,y=icon.stripY,width=icon.stripWidth,height=icon.stripHeight}
                 icon.stripMove=nil
-                liftCastIcon(icon)
+                liftCastIcon(h,icon)
                 icon:EnableMouse(false)
                 if GameTooltip:IsOwned(icon) then GameTooltip:Hide() end
                 h.frame:SetScript('OnUpdate',state.update)
