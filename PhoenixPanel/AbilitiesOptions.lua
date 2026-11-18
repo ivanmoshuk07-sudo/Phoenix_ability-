@@ -59,6 +59,7 @@ function A:InsertAbilityOptions(parent)
     profileNameTyping=function(value) newProfileName=value end
     RegisterProfileNameControl()
     local function isOff() return T:IsProfileOff() end
+    local function stripMode() return cfg().panelMode=='strip' end
     local function reset() draft=nil; editing=nil; status=nil end
     local function rebuild()
         if profile~=A.db then profile=A.db; reset() end
@@ -110,7 +111,11 @@ function A:InsertAbilityOptions(parent)
                     unit={type='select',name='На ком отслеживать',order=3,values=T.units,hidden=function() return not draft or draft.kind=='spell' or (draft.kind=='resource' and draft.resource=='targethealth') end},
                     showGCD={type='toggle',name='Показывать ГКД',order=4,hidden=function() return not draft or draft.kind~='spell' end},
                     nextSwing={type='toggle',name='Заменяет / усиливает следующую автоатаку',order=5.1,hidden=function() return not draft or draft.kind=='resource' end},
-                    readyFirst={type='toggle',name='Переносить в начало при готовности',order=5.2,desc='Переносит способность в очередь после автоатаки и её усилителей. Для заклинания перенос возможен уже во время ГКД или когда до конца собственного КД осталось не больше одного ГКД (обычно 1,5 сек), но только при достаточном ресурсе и доступности применения. Для бафа/дебафа перенос выполняется при отсутствии эффекта или когда он закончится к завершению текущего ГКД (при доступности заклинания). Сам список не переставляется.',hidden=function() return not draft or draft.kind=='resource' end},
+                    readyFirst={type='toggle',name='Переносить в начало при готовности',order=5.2,desc='Переносит способность в очередь после автоатаки и её усилителей. Для заклинания перенос возможен уже во время ГКД или когда до конца собственного КД осталось не больше одного ГКД (обычно 1,5 сек), но только при достаточном ресурсе и доступности применения. Для бафа/дебафа перенос выполняется при отсутствии эффекта или когда он закончится к завершению текущего ГКД (при доступности заклинания). Сам список не переставляется. В полосе применений порядок определяет числовой приоритет.',hidden=function() return not draft or draft.kind=='resource' end},
+                    castPriority={type='range',name='Приоритет в полосе применений',order=5.3,min=1,max=10,step=1,
+                        desc='1 — самый высокий приоритет. При одинаковом приоритете раньше идёт запись выше в списке.',
+                        hidden=function() return not draft or not stripMode() or draft.kind=='resource' or T:NextSwingEntry(draft) end,
+                        get=function() return draft and T:CastPriority(draft) or 5 end},
                     checkRange={type='toggle',name='Учитывать дальность до цели',order=5,hidden=function() return not draft or draft.kind~='spell' end},
                     onlyMine={type='toggle',name='Только мои ауры',order=6,hidden=function() return not draft or (draft.kind~='buff' and draft.kind~='debuff') end},
                     resourcePercent={type='toggle',name='Ресурс в процентах',order=7,hidden=function() return not draft or draft.kind~='resource' end},
@@ -156,6 +161,14 @@ function A:InsertAbilityOptions(parent)
             list={type='group',name='Нумерованный список — порядок иконок',order=10,guiInline=true,args={}}
         }}
     }}
+    local appearanceArgs=root.args.appearance.args
+    appearanceArgs.panelMode={type='select',name='Режим динамической панели',order=0,
+        values={classic='Классический',strip='Полоса применений'},
+        get=function() return stripMode() and 'strip' or 'classic' end,
+        set=function(_,value) cfg().panelMode=value; T:Apply() end}
+    appearanceArgs.stripInfo={type='description',order=0.1,width='full',hidden=function() return not stripMode() end,
+        name='Первый слот занимает автоатака или её усилитель. Готовые к концу ГКД способности идут дальше по приоритету. Иконки движутся в одном ряду; «Кол-во в ряду» включает первый слот.'}
+    for _,key in ipairs({'rows','growX','growY'}) do appearanceArgs[key].hidden=stripMode end
     T:AddRotationOptions(root.args.tracking.args.settings.args,function() return draft end)
     local abilityFields=root.args.tracking.args.settings.args
     abilityFields.showResource.name='Показывать ресурс у иконки'

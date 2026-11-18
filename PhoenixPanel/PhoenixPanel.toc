@@ -1,7 +1,7 @@
 ## Interface: 30300
 ## Title: PhoenixPanel |cff1784d1ElvUI|r
 ## Notes: Stationary tracking, dynamic ability priority and DBM timers.
-## Version: 0.1.0
+## Version: 0.2.0
 ## Dependencies: ElvUI
 ## OptionalDeps: DBM-Core
 ## SavedVariables: PhoenixPanelDB
@@ -15,6 +15,8 @@ Abilities.lua
 AutoAttack.lua
 Rotation.lua
 Stacks.lua
+CastStrip.lua
+CastStripView.lua
 AbilitiesOptions.lua
 Stationary.lua
 StationaryOptions.lua

@@ -16,7 +16,7 @@ local appearance=copy(A.defaults.dbm)
 appearance.selected=nil; appearance.sort=nil; appearance.descending=nil
 appearance.frame='target'; appearance.y=40; appearance.desaturate=true
 appearance.scale=1
-A.defaults.abilities={appearance=appearance,entries={},nextId=1,autoAttack={enabled=false,showTimer=true,showResource=false,resource='current',resourcePosition='BOTTOM',replace=true},flashes={cooldown=true,debuff=true}}
+A.defaults.abilities={appearance=appearance,entries={},nextId=1,panelMode='classic',autoAttack={enabled=false,showTimer=true,showResource=false,resource='current',resourcePosition='BOTTOM',replace=true},flashes={cooldown=true,debuff=true}}
 T.kinds={spell='Способность',buff='Баф',debuff='Дебаф',resource='Ресурс'}
 T.units={player='Игрок',target='Цель',focus='Фокус',pet='Питомец'}
 T.resources={current='Текущий ресурс',mana='Мана',rage='Ярость',focus='Фокус',energy='Энергия',runic='Сила рун',combo='Комбо-очки',health='Здоровье',targethealth='ХП цели',happiness='Счастье питомца',runes='Все руны',blood='Руны крови',frost='Руны льда',unholy='Руны нечестивости',death='Руны смерти'}
@@ -30,6 +30,7 @@ function T:Config() return A.db.abilities end
 
 function T:Validate()
     local cfg=self:Config()
+    if not self.stationary and cfg.panelMode~='strip' then cfg.panelMode='classic' end
     local function number(t,k,d,lo,hi)
         local n=tonumber(t[k]); if not n or n~=n then n=d end
         t[k]=math.floor(math.max(lo,math.min(hi,n)))
@@ -79,6 +80,7 @@ function T:Validate()
             if p.auraConditionUnit~='target' then p.auraConditionUnit='player' end
             if p.auraConditionKind~='debuff' then p.auraConditionKind='buff' end
             if not self.stationary and p.kind~='resource' then p.nextSwing=self:NextSwingEntry(p) end
+            if not self.stationary and p.castPriority~=nil then p.castPriority=self:CastPriority(p) end
             p.auraConditionId=tonumber(p.auraConditionId)
             if p.auraConditionMode~='absent' then p.auraConditionMode='present' end
             entries[#entries+1]=p
@@ -428,7 +430,8 @@ function T:Render(plate,items)
     local h=self.holders[plate] or self:NewHolder(plate)
     if h.scale~=cfg.scale then h.frame:SetScale(cfg.scale); h.scale=cfg.scale end
     h.touched=true
-    local n=math.min(#items,cfg.perRow*cfg.rows)
+    local rowsLimit=h.castStrip and 1 or cfg.rows
+    local n=math.min(#items,cfg.perRow*rowsLimit)
     local w,height=cfg.size,cfg.keepAspect and cfg.size or cfg.height
     local columns=math.min(n,cfg.perRow); local rows=math.ceil(n/cfg.perRow)
     local width=columns*w+(columns-1)*cfg.spacing
@@ -477,9 +480,11 @@ function T:Render(plate,items)
             self:TrackingTooltip(icon)
         end
         local col=(i-1)%cfg.perRow; local row=math.floor((i-1)/cfg.perRow)
-        if cfg.growX=='LEFT' then col=columns-1-col end
-        if cfg.growY=='UP' then row=rows-1-row end
-        if icon.layout~=layout then
+        if h.castStrip then
+            self:PositionCastStripIcon(h,icon,col*(w+cfg.spacing),-abovePadding,w,height)
+        elseif icon.layout~=layout then
+            if cfg.growX=='LEFT' then col=columns-1-col end
+            if cfg.growY=='UP' then row=rows-1-row end
             icon:SetSize(w,height); icon:ClearAllPoints()
             icon:SetPoint('TOPLEFT',h.frame,'TOPLEFT',col*(w+cfg.spacing),-abovePadding-row*(rowHeight+cfg.spacing))
             icon.layout=layout
@@ -619,10 +624,10 @@ end
 
 function T:Tick()
     if self.shuttingDown or not A.db or not A.db.abilities then return end
-    if self:IsProfileOff() then self:HideAll(); return end
+    if self:IsProfileOff() then self:ResetCastStrip(); self:HideAll(); return end
     local cfg=self:Config()
     for _,h in pairs(self.holders) do h.touched=false end
-    if not cfg.appearance.enabled then self.transitions={}; self:HideUnused(); return end
+    if not cfg.appearance.enabled then self:ResetCastStrip(); self.transitions={}; self:HideUnused(); return end
     if not self.auraCacheTime or GetTime()-self.auraCacheTime>=1 then self.auraCache={}; self.auraCacheTime=GetTime() end
     local items={}; local autoAdded=false; local hasReplacers=false
     local states={}; local hasMatchingVariant=false
@@ -638,6 +643,14 @@ function T:Tick()
             states[#states+1]={entry=p,item=item,nextSwing=nextSwing}
         end
     end
+    if cfg.panelMode=='strip' then
+        local anchor=self:Anchor()
+        if not anchor or not anchor:IsShown() then self:ResetCastStrip(); self:HideUnused(); return end
+        self:RenderCastStrip(anchor,self:BuildCastStrip(states))
+        self:HideUnused()
+        return
+    end
+    self:ResetCastStrip()
     for _,state in ipairs(states) do
         local p,item,nextSwing=state.entry,state.item,state.nextSwing
         -- Mutually exclusive aura conditions choose a variant, not a second attack slot.
@@ -697,6 +710,7 @@ function T:Tick()
 end
 
 function T:Apply()
+    if not self.stationary then self:ResetCastStrip() end
     self.transitions={}
     self:Validate(); self.revision=self.revision+1
     self.auraCache={}; self.auraCacheTime=nil
@@ -717,7 +731,11 @@ function T:Initialize()
         end
     end
     driver:SetScript('OnEvent',function(_,event,...)
-        if not self.stationary then self:AutoEvent(event,...) end
+        if not self.stationary then
+            self:AutoEvent(event,...)
+            if event=='UNIT_SPELLCAST_SUCCEEDED' then self:CastStripEvent(event,...)
+            elseif event=='PLAYER_LOGOUT' or event=='PLAYER_ENTERING_WORLD' then self:ResetCastStrip() end
+        end
         if event=='PLAYER_LOGOUT' then self.shuttingDown=true; self:HideAll()
         elseif event=='UNIT_AURA' or event=='PLAYER_TARGET_CHANGED' or event=='PLAYER_FOCUS_CHANGED' or event=='PLAYER_ENTERING_WORLD' then self.auraCacheTime=nil end
     end)
