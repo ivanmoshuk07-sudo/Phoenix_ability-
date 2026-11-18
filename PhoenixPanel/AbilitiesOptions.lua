@@ -139,6 +139,10 @@ function A:InsertAbilityOptions(parent)
                     liveStatus={type='description',order=12.6,name=function()
                         if not draft then return '' end
                         local state=T:Evaluate(draft,true)
+                        if stripMode() and draft.kind=='spell' and state.noResource and state.conditionPassed
+                            and not T:NextSwingEntry(draft) and T:StripSpellReadyAt(state)<math.huge then
+                            return 'Участвует в прогнозе. Недостаточно ресурса.'
+                        end
                         local replacement=''
                         if T:NextSwingEntry(draft) then
                             replacement=cfg().autoAttack.enabled and cfg().autoAttack.replace and 'Замена автоатакой включена. ' or 'Для замены включите автоатаку и замену в её вкладке. '
@@ -167,7 +171,7 @@ function A:InsertAbilityOptions(parent)
         get=function() return stripMode() and 'strip' or 'classic' end,
         set=function(_,value) cfg().panelMode=value; T:Apply() end}
     appearanceArgs.stripInfo={type='description',order=0.1,width='full',hidden=function() return not stripMode() end,
-        name='Первый слот занимает автоатака или её усилитель. Каждая следующая иконка показывает лучшую способность к своему шагу ГКД. Если к шагу ничего не готово, полоса переходит к ближайшему восстановлению. «Кол-во в ряду» включает первый слот.'}
+        name='Первый слот занимает автоатака или её усилитель. Каждая следующая иконка показывает лучшую способность к своему шагу ГКД. Если к шагу ничего не готово, полоса переходит к ближайшему восстановлению. Нехватка ресурса окрашивает иконку в синий, сохраняя её место в прогнозе. «Кол-во в ряду» включает первый слот.'}
     for _,key in ipairs({'rows','growX','growY'}) do appearanceArgs[key].hidden=stripMode end
     T:AddRotationOptions(root.args.tracking.args.settings.args,function() return draft end)
     local abilityFields=root.args.tracking.args.settings.args

@@ -7,17 +7,26 @@ function T:CastPriority(entry)
     return math.max(1,math.min(10,math.floor(value)))
 end
 
-local function spellReadyAt(item)
-    if item.available and not item.queued then return 0 end
-    if item.priorityCanCast and not item.noResource and not item.ownPaused
-        and not item.queued and item.ownRemaining and item.ownRemaining>0 then
-        return item.ownRemaining
+function T:StripSpellReadyAt(item)
+    if item.queued then return math.huge end
+    if item.available then return 0 end
+    if not item.priorityCanCast then return math.huge end
+
+    -- Forecast timing without spell costs. The renderer still uses noResource
+    -- to tint the ability and conditions are evaluated before scheduling.
+    if item.noResource then
+        if item.charges~=nil then
+            if item.charges>0 then return 0 end
+        elseif not item.ownCooldownActive and not item.ownPaused then
+            return 0
+        end
     end
-    return math.huge
+    if item.ownPaused then return math.huge end
+    return item.ownRemaining and item.ownRemaining>0 and item.ownRemaining or math.huge
 end
 
 local function entryReadyAt(self,entry,item)
-    if entry.kind=='spell' then return spellReadyAt(item) end
+    if entry.kind=='spell' then return self:StripSpellReadyAt(item) end
     if entry.kind=='resource' or item.auraEnd==0 then return math.huge end
 
     -- "Available" for an aura means it is already present. To forecast
@@ -25,7 +34,7 @@ local function entryReadyAt(self,entry,item)
     local probe=self.Copy(entry)
     probe.kind='spell'
     probe.mode='always'
-    return math.max(spellReadyAt(self:Evaluate(probe,true,true)),item.remaining)
+    return math.max(self:StripSpellReadyAt(self:Evaluate(probe,true,true)),item.remaining)
 end
 
 local function higherPriority(a,b)

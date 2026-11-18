@@ -263,6 +263,7 @@ function T:Evaluate(p,inspect)
         if GetSpellCharges then
             local charges,maxCharges,cs,cd=GetSpellCharges(p.spellId)
             if charges and maxCharges and maxCharges>0 then
+                item.charges=charges
                 item.countText=charges..'/'..maxCharges
                 item.available=known and usable and charges>0
                 if charges<maxCharges and cs and cd and cd>0 then start=cs; duration=cd; ownCD=true; paused=false end
