@@ -6,7 +6,7 @@ local castTime=0.5
 local castLevelOffset=16
 
 local function itemKey(item)
-    return tostring(item.id)..':'..tostring(item.spellId or item.itemId)
+    return tostring(item.id)..':'..tostring(item.spellId or item.itemId)..':'..tostring(item.stripOccurrence or 0)
 end
 
 local function place(h,icon,x,y)
@@ -140,15 +140,13 @@ function T:RenderCastStrip(plate,items)
 end
 
 local function castIcon(h,spellId,spellName)
-    local nameMatch
     for _,icon in ipairs(h.icons) do
         local item=icon.abilityState
         if item and item.spellId and not item.autoAttack and icon:IsShown() then
             if spellId and item.spellId==spellId then return icon end
-            if not nameMatch and spellName and GetSpellInfo(item.spellId)==spellName then nameMatch=icon end
+            if not spellId and spellName and GetSpellInfo(item.spellId)==spellName then return icon end
         end
     end
-    return nameMatch
 end
 
 function T:OnStripCast(spellId,spellName)
@@ -157,8 +155,9 @@ function T:OnStripCast(spellId,spellName)
         if state and h.frame:IsVisible() then
             local icon=castIcon(h,spellId,spellName)
             if icon then
+                local used=icon.abilityState
                 local started=GetTime()
-                state.suppressed[itemKey(icon.abilityState)]=started+castTime
+                state.suppressed[itemKey(used)]=started+castTime
                 state.departures[icon]={start=started,x=icon.stripX,y=icon.stripY,width=icon.stripWidth,height=icon.stripHeight}
                 icon.stripMove=nil
                 liftCastIcon(h,icon)
@@ -166,7 +165,7 @@ function T:OnStripCast(spellId,spellName)
                 if GameTooltip:IsOwned(icon) then GameTooltip:Hide() end
                 h.frame:SetScript('OnUpdate',state.update)
                 self:RenderCastStrip(plate,state.items)
-                return
+                return used
             end
         end
     end

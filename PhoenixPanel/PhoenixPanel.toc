@@ -1,7 +1,7 @@
 ## Interface: 30300
 ## Title: PhoenixPanel |cff1784d1ElvUI|r
 ## Notes: Stationary tracking, dynamic ability priority and DBM timers.
-## Version: 0.2.0
+## Version: 0.3.0
 ## Dependencies: ElvUI
 ## OptionalDeps: DBM-Core
 ## SavedVariables: PhoenixPanelDB

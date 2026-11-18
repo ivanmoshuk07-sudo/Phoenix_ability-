@@ -727,7 +727,10 @@ function T:Tick()
 end
 
 function T:Apply()
-    if not self.stationary then self:ResetCastStrip() end
+    if not self.stationary then
+        self:ResetCastStrip()
+        self.stripConfirmed=nil
+    end
     self.transitions={}
     self:Validate(); self.revision=self.revision+1
     self.auraCache={}; self.auraCacheTime=nil

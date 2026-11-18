@@ -167,7 +167,7 @@ function A:InsertAbilityOptions(parent)
         get=function() return stripMode() and 'strip' or 'classic' end,
         set=function(_,value) cfg().panelMode=value; T:Apply() end}
     appearanceArgs.stripInfo={type='description',order=0.1,width='full',hidden=function() return not stripMode() end,
-        name='Первый слот занимает автоатака или её усилитель. Готовые к концу ГКД способности идут дальше по приоритету. Иконки движутся в одном ряду; «Кол-во в ряду» включает первый слот.'}
+        name='Первый слот занимает автоатака или её усилитель. Каждая следующая иконка показывает лучшую способность к своему шагу ГКД. Если к шагу ничего не готово, полоса переходит к ближайшему восстановлению. «Кол-во в ряду» включает первый слот.'}
     for _,key in ipairs({'rows','growX','growY'}) do appearanceArgs[key].hidden=stripMode end
     T:AddRotationOptions(root.args.tracking.args.settings.args,function() return draft end)
     local abilityFields=root.args.tracking.args.settings.args
