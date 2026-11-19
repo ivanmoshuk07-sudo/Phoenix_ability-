@@ -140,13 +140,15 @@ function T:RenderCastStrip(plate,items)
 end
 
 local function castIcon(h,spellId,spellName)
+    local rankMatch
     for _,icon in ipairs(h.icons) do
         local item=icon.abilityState
         if item and item.spellId and not item.autoAttack and icon:IsShown() then
             if spellId and item.spellId==spellId then return icon end
-            if not spellId and spellName and GetSpellInfo(item.spellId)==spellName then return icon end
+            if not rankMatch and spellName and GetSpellInfo(item.spellId)==spellName then rankMatch=icon end
         end
     end
+    return rankMatch
 end
 
 function T:OnStripCast(spellId,spellName)

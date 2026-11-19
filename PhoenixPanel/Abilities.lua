@@ -16,7 +16,7 @@ local appearance=copy(A.defaults.dbm)
 appearance.selected=nil; appearance.sort=nil; appearance.descending=nil
 appearance.frame='target'; appearance.y=40; appearance.desaturate=true
 appearance.scale=1
-A.defaults.abilities={appearance=appearance,entries={},nextId=1,panelMode='classic',autoAttack={enabled=false,showTimer=true,showResource=false,resource='current',resourcePosition='BOTTOM',replace=true},flashes={cooldown=true,debuff=true}}
+A.defaults.abilities={appearance=appearance,entries={},nextId=1,panelMode='classic',stripHighestOnly=false,autoAttack={enabled=false,showTimer=true,showResource=false,resource='current',resourcePosition='BOTTOM',replace=true},flashes={cooldown=true,debuff=true}}
 T.kinds={spell='Способность',buff='Баф',debuff='Дебаф',resource='Ресурс'}
 T.units={player='Игрок',target='Цель',focus='Фокус',pet='Питомец'}
 T.resources={current='Текущий ресурс',mana='Мана',rage='Ярость',focus='Фокус',energy='Энергия',runic='Сила рун',combo='Комбо-очки',health='Здоровье',targethealth='ХП цели',happiness='Счастье питомца',runes='Все руны',blood='Руны крови',frost='Руны льда',unholy='Руны нечестивости',death='Руны смерти'}
@@ -731,6 +731,7 @@ function T:Apply()
     if not self.stationary then
         self:ResetCastStrip()
         self.stripConfirmed=nil
+        self.stripRecentCasts=nil
     end
     self.transitions={}
     self:Validate(); self.revision=self.revision+1
@@ -755,8 +756,12 @@ function T:Initialize()
     driver:SetScript('OnEvent',function(_,event,...)
         if not self.stationary then
             self:AutoEvent(event,...)
-            if event=='UNIT_SPELLCAST_SUCCEEDED' then self:CastStripEvent(event,...)
-            elseif event=='PLAYER_LOGOUT' or event=='PLAYER_ENTERING_WORLD' then self:ResetCastStrip() end
+            if event=='UNIT_SPELLCAST_SUCCEEDED' or event=='COMBAT_LOG_EVENT_UNFILTERED' then
+                self:CastStripEvent(event,...)
+            elseif event=='PLAYER_LOGOUT' or event=='PLAYER_ENTERING_WORLD' then
+                self:ResetCastStrip()
+                self.stripRecentCasts=nil
+            end
         end
         if event=='PLAYER_LOGOUT' then self.shuttingDown=true; self:HideAll()
         elseif event=='UNIT_AURA' or event=='PLAYER_TARGET_CHANGED' or event=='PLAYER_FOCUS_CHANGED' or event=='PLAYER_ENTERING_WORLD' then self.auraCacheTime=nil end

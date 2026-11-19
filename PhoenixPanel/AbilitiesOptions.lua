@@ -273,6 +273,11 @@ function A:InsertAbilityOptions(parent)
         set=function(_,value) cfg().panelMode=value; T:Apply() end}
     appearanceArgs.stripInfo={type='description',order=0.1,width='full',hidden=function() return not stripMode() end,
         name='Прогноз по ГКД идёт после автоатаки. Синий цвет означает нехватку ресурса. Первый слот входит в лимит иконок.'}
+    appearanceArgs.stripHighestOnly={type='toggle',name='Лучший вариант способности',order=0.2,width='full',
+        desc='Если одна способность добавлена с разными триггерами, использовать в полосе только подходящую запись с самым высоким приоритетом. Повторы выбранной записи по ГКД и стакам учитываются отдельно.',
+        hidden=function() return not stripMode() end,
+        get=function() return cfg().stripHighestOnly==true end,
+        set=function(_,value) cfg().stripHighestOnly=value; T:Apply() end}
     for _,key in ipairs({'rows','growX','growY'}) do appearanceArgs[key].hidden=stripMode end
     root.args.autoAttack={type='group',name='Автоатака',order=3,disabled=isOff,
         get=function(info) return cfg().autoAttack[info[#info]] end,

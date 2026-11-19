@@ -26,7 +26,7 @@ function T:StripSpellReadyAt(item)
 end
 
 local function entryReadyAt(self,entry,item)
-    if entry.kind=='spell' then return self:StripSpellReadyAt(item) end
+    if entry.kind=='spell' then return self:StripSpellReadyAt(item),item end
     if entry.kind=='resource' or item.auraEnd==0 then return math.huge end
 
     -- "Available" for an aura means it is already present. To forecast
@@ -34,7 +34,8 @@ local function entryReadyAt(self,entry,item)
     local probe=self.Copy(entry)
     probe.kind='spell'
     probe.mode='always'
-    return math.max(self:StripSpellReadyAt(self:Evaluate(probe,true,true)),item.remaining)
+    local spell=self:Evaluate(probe,true,true)
+    return math.max(self:StripSpellReadyAt(spell),item.remaining),spell
 end
 
 local function higherPriority(a,b)
@@ -173,7 +174,7 @@ local function rememberAuraSpending(self,item,now)
     end
 end
 
-local function knownCooldown(self,spellId)
+local function knownCooldown(self,spellId,spell)
     if not spellId then return end
     if GetSpellCharges then
         local charges,maximum=GetSpellCharges(spellId)
@@ -183,29 +184,49 @@ local function knownCooldown(self,spellId)
             return nil,math.max(1,charges or 0)
         end
     end
-    if GetSpellBaseCooldown then
-        local milliseconds=GetSpellBaseCooldown(spellId)
-        if type(milliseconds)=='number' and milliseconds>=0 and milliseconds<=604800000 then
-            return milliseconds/1000
-        end
+    local milliseconds=GetSpellBaseCooldown and GetSpellBaseCooldown(spellId)
+    if type(milliseconds)=='number' and milliseconds>0 and milliseconds<=604800000 then
+        return milliseconds/1000
     end
-    return self.stripMeasuredCooldowns and self.stripMeasuredCooldowns[spellId]
+    local measured=self.stripMeasuredCooldowns and self.stripMeasuredCooldowns[spellId]
+    if spell.ownRemaining and spell.ownRemaining>0 and not spell.ownPaused then
+        -- The display timer can have been replaced by a longer shared GCD.
+        local own=math.max(spell.ownRemaining,not spell.gcd and spell.total or 0)
+        measured=math.max(own,measured or 0)
+        self.stripMeasuredCooldowns=self.stripMeasuredCooldowns or {}
+        self.stripMeasuredCooldowns[spellId]=measured
+    end
+    if measured and measured>0 then return measured end
+    if self.stripObservedCasts and self.stripObservedCasts[spellId] then return end
+    if milliseconds==0 or measured==0 then return 0 end
 end
 
 local function sampleCooldowns(self,now,gcdStart,gcdDuration)
     for id,cast in pairs(self.stripObservedCasts or {}) do
         local age=now-cast.time
-        if age>0.8 then
-            self.stripObservedCasts[id]=nil
-        elseif age>=0.1 then
+        if age>=0.1 and age<=0.9 then
             local start,duration,paused=self:Cooldown(cast.lookup)
-            if not paused and duration>0 and math.abs(start-cast.time)<0.35 then
+            if not paused and duration>0 and start>=cast.time-0.35 and start<=now then
                 local shared=gcdDuration>0 and math.abs(start-gcdStart)<0.05
                     and math.abs(duration-gcdDuration)<0.05
-                self.stripMeasuredCooldowns=self.stripMeasuredCooldowns or {}
-                self.stripMeasuredCooldowns[id]=shared and 0 or duration
-                self.stripObservedCasts[id]=nil
+                if shared then
+                    -- A shared GCD can arrive before the own cooldown.
+                    cast.firstShared=cast.firstShared or now
+                    cast.lastShared=now
+                else
+                    self.stripMeasuredCooldowns=self.stripMeasuredCooldowns or {}
+                    self.stripMeasuredCooldowns[id]=duration
+                    self.stripObservedCasts[id]=nil
+                end
             end
+        end
+        if age>=0.8 and self.stripObservedCasts[id] then
+            if cast.firstShared and cast.lastShared-cast.firstShared>=0.15
+                and cast.lastShared-cast.time>=0.4 then
+                self.stripMeasuredCooldowns=self.stripMeasuredCooldowns or {}
+                self.stripMeasuredCooldowns[id]=self.stripMeasuredCooldowns[id] or 0
+            end
+            self.stripObservedCasts[id]=nil
         end
     end
 end
@@ -226,13 +247,16 @@ end
 local function project(self,ordered,candidates,limit,cursor,gcdDuration,counts,now)
     local spellReady={}
     local spentCharges={}
+    local repeatThrough
     while #ordered<limit do
         local choice,cost
         local nextTime=math.huge
         for _,candidate in ipairs(candidates) do
-            local ready=math.max(candidate.ready,spellReady[candidate.spellId] or 0)
-            if ready<math.huge then
-                local branch=payableAuraBranch(candidate.auraBranches,now+math.max(ready,cursor))
+            local afterCast=spellReady[candidate.spellId]
+            local ready=math.max(candidate.ready,afterCast or 0)
+            local at=math.max(ready,cursor)
+            if ready<math.huge and (not afterCast or at<=repeatThrough+0.000001) then
+                local branch=payableAuraBranch(candidate.auraBranches,now+at)
                 if branch then
                     if ready<=cursor+0.000001 then
                         if not choice or higherPriority(candidate,choice) then choice,cost=candidate,branch end
@@ -243,6 +267,9 @@ local function project(self,ordered,candidates,limit,cursor,gcdDuration,counts,n
             end
         end
         if choice then
+            -- A new spell may still enter after a long gap. Repeated casts
+            -- only fill the ordinary visible GCD window from the first icon.
+            repeatThrough=repeatThrough or cursor+(limit-2)*gcdDuration
             local slot=stripItem(self,choice.item,counts,cursor)
             ordered[#ordered+1]=slot
             if type(cost)=='table' then
@@ -272,6 +299,34 @@ local function project(self,ordered,candidates,limit,cursor,gcdDuration,counts,n
     end
 end
 
+local function variantKey(entry)
+    if not entry.spellId then return end
+    return entry.kind..':'..entry.spellId..':'..(entry.kind=='spell' and '' or (entry.unit or ''))
+end
+
+local function highestVariants(candidates,blocked,now,gcdLeft)
+    local best={}
+    for _,candidate in ipairs(blocked) do
+        local key=candidate.variant
+        if key and (not best[key] or higherPriority(candidate,best[key])) then best[key]=candidate end
+    end
+    for _,candidate in ipairs(candidates) do
+        local key=candidate.variant
+        if key and payableAuraBranch(candidate.auraBranches,now+math.max(gcdLeft,candidate.ready)) then
+            local previous=best[key]
+            if not previous or not previous.ready or higherPriority(candidate,previous) then best[key]=candidate end
+        end
+    end
+    local function filter(list)
+        local kept={}
+        for _,candidate in ipairs(list) do
+            if not candidate.variant or best[candidate.variant]==candidate then kept[#kept+1]=candidate end
+        end
+        return kept
+    end
+    return filter(candidates),filter(blocked)
+end
+
 function T:BuildCastStrip(states)
     local cfg=self:Config()
     local replace=cfg.autoAttack.enabled and cfg.autoAttack.replace
@@ -282,19 +337,25 @@ function T:BuildCastStrip(states)
     sampleCooldowns(self,now,gcdStart,gcdDuration)
     refreshSpentAuras(self,now)
 
-    local first,candidates,blocked,monitors=nil,{},{},{}
+    local first,firstVariant,firstPriority
+    local candidates,blocked,monitors={},{},{}
     local sources={}
     for index,state in ipairs(states) do
         local entry,item=state.entry,state.item
         if state.nextSwing then
-            if not first and item.conditionPassed and item.visible
+            if item.conditionPassed and item.visible
                 and (not replace or item.available or item.queued) then
-                first=item
+                local variant=cfg.stripHighestOnly and variantKey(entry)
+                local priority=self:CastPriority(entry)
+                if not first or (variant and firstVariant==variant and priority<firstPriority) then
+                    first,firstVariant,firstPriority=item,variant,priority
+                end
             end
         elseif item.conditionPassed and (item.visible or entry.kind=='spell') then
-            local ready=entryReadyAt(self,entry,item)
+            local ready,spell=entryReadyAt(self,entry,item)
             if item.visible or (entry.kind=='spell' and ready<math.huge) then
                 local candidate={item=item,index=index,priority=self:CastPriority(entry)}
+                if cfg.stripHighestOnly then candidate.variant=variantKey(entry) end
                 if entry.kind=='resource' then
                     monitors[#monitors+1]=candidate
                 elseif ready==math.huge or not item.spellId then
@@ -302,11 +363,12 @@ function T:BuildCastStrip(states)
                 else
                     candidate.ready=ready
                     candidate.spellId=item.spellId
-                    candidate.cooldown,candidate.charges=knownCooldown(self,item.spellId)
+                    candidate.cooldown,candidate.charges=knownCooldown(self,item.spellId,spell)
                     if not item.replacement then
                         candidate.auraBranches=auraBranches(self,entry,sources,now)
                     end
                     if entry.kind=='spell' and candidate.cooldown==nil and not candidate.charges
+                        and not (self.stripObservedCasts and self.stripObservedCasts[item.spellId])
                         and item.ownRemaining==0 and usesAuraStacks(candidate.auraBranches) then
                         candidate.cooldown=0
                     end
@@ -323,6 +385,7 @@ function T:BuildCastStrip(states)
     local ordered={first or self:AutoItem()}
     local limit=cfg.appearance.perRow
     local counts={}
+    if cfg.stripHighestOnly then candidates,blocked=highestVariants(candidates,blocked,now,gcdLeft) end
     project(self,ordered,candidates,limit,gcdLeft,self.stripLastGCD or 1.5,counts,now)
     table.sort(blocked,higherPriority)
     table.sort(monitors,higherPriority)
@@ -335,12 +398,8 @@ function T:BuildCastStrip(states)
     return ordered
 end
 
-function T:CastStripEvent(event,unit,name,rank,lineId,spellId)
-    if event~='UNIT_SPELLCAST_SUCCEEDED' or unit~='player'
-        or not A.db or not A.db.abilities then return end
-    local cfg=self:Config()
-    if cfg.panelMode~='strip' or not cfg.appearance.enabled or self:IsProfileOff() then return end
-
+local function unitCast(unit,name,rank,lineId,spellId)
+    if unit~='player' then return end
     local id=tonumber(spellId)
     if not id and lineId==nil and type(rank)=='number' then
         -- Some clients send unit, cast GUID and spell ID.
@@ -348,10 +407,50 @@ function T:CastStripEvent(event,unit,name,rank,lineId,spellId)
         if type(name)=='string' and name:match('^Cast%-') then name=nil end
     end
     if type(name)=='number' then id=id or name; name=nil end
-    if not id and type(name)~='string' then return end
+    return id,name
+end
 
-    local used=self:OnStripCast(id,name)
+local function combatCast(_,subevent,sourceOrHidden,...)
+    if subevent~='SPELL_CAST_SUCCESS' then return end
+    local player=UnitGUID and UnitGUID('player')
+    if not player then return end
+    if type(sourceOrHidden)=='boolean' then
+        if select(1,...)==player then return tonumber((select(9,...))),(select(10,...)) end
+    elseif sourceOrHidden==player then
+        return tonumber((select(6,...))),(select(7,...))
+    end
+end
+
+function T:CastStripEvent(event,...)
+    if not A.db or not A.db.abilities then return end
+    local cfg=self:Config()
+    if cfg.panelMode~='strip' or not cfg.appearance.enabled or self:IsProfileOff() then return end
+    local id,name
+    if event=='UNIT_SPELLCAST_SUCCEEDED' then
+        id,name=unitCast(...)
+    elseif event=='COMBAT_LOG_EVENT_UNFILTERED' then
+        if select('#',...)==0 and CombatLogGetCurrentEventInfo then
+            id,name=combatCast(CombatLogGetCurrentEventInfo())
+        else
+            id,name=combatCast(...)
+        end
+    else return end
+    if id and id<=0 then id=nil end
+    local spellName=id and GetSpellInfo(id) or name
+    if type(spellName)~='string' or spellName=='' then
+        spellName=type(name)=='string' and name~='' and name or nil
+    end
+    local castKey=spellName or id
+    if not castKey then return end
+
     local now=GetTime()
+    local recent=self.stripRecentCasts
+    if recent and recent[castKey] and now-recent[castKey]<0.35 then return end
+    local used=self:OnStripCast(id,spellName)
+    if used then
+        if not recent then recent={}; self.stripRecentCasts=recent end
+        recent[castKey]=now
+    end
     rememberAuraSpending(self,used,now)
     if used and used.stripOccurrence then
         self.stripConfirmed=self.stripConfirmed or {}
@@ -359,9 +458,9 @@ function T:CastStripEvent(event,unit,name,rank,lineId,spellId)
         self.stripConfirmed[key]=math.max(self.stripConfirmed[key] or 0,used.stripOccurrence)
     end
     local tracked=used and used.spellId or id
-    if not tracked then
+    if not tracked and spellName then
         for _,entry in ipairs(cfg.entries) do
-            if entry.enabled and entry.spellId and GetSpellInfo(entry.spellId)==name then
+            if entry.enabled and entry.spellId and GetSpellInfo(entry.spellId)==spellName then
                 tracked=entry.spellId
                 break
             end

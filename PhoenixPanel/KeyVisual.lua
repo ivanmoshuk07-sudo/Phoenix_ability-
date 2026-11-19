@@ -11,18 +11,37 @@ local function mouseKey(key)
     return key:match('BUTTON%d+$') or key:match('MOUSEWHEELUP$') or key:match('MOUSEWHEELDOWN$')
 end
 
+local function clickFrame(command)
+    if type(command)~='string' then return end
+    local name,mouse=command:match('^CLICK ([^:%s]+):([^%s]*)$')
+    if mouse=='' or mouse=='LeftButton' then return name end
+    return command:match('^CLICK ([^:%s]+)$')
+end
+
+local function nativeBinding(command)
+    return (command:match('^ACTIONBUTTON%d+$') and type(ActionButtonDown)=='function')
+        or (command:match('^MULTIACTIONBAR[1-4]BUTTON%d+$') and type(MultiActionButtonDown)=='function')
+end
+
 local function elvButton(command)
     local bars=E.GetModule and E:GetModule('ActionBars',true)
-    local name=command:match('^CLICK ([^:]+):LeftButton$')
+    local name=clickFrame(command)
     for _,bar in pairs(bars and bars.handledBars or {}) do
         for i,button in ipairs(bar.buttons or {}) do
             local binding=bar.bindButtons and (bar.bindButtons..i)
+            if not binding and button.GetBindingAction then binding=button:GetBindingAction() end
             local frame=button:GetName()
-            if name==frame or binding==command then
-                return button,binding,'CLICK '..frame..':LeftButton'
+            if frame and (name==frame or binding==command) then
+                return button,binding,frame
             end
         end
     end
+end
+
+local function reachesRoute(command,route)
+    if not command or command=='' then return false end
+    return command==route.action or command==route.binding
+        or (route.frame and clickFrame(command)==route.frame)
 end
 
 local function observeKey(key)
@@ -30,28 +49,27 @@ local function observeKey(key)
         or not GetBindingAction or not GetBindingKey then return end
     local action=GetBindingAction(key,true)
     if not action or action=='' then return end
-    local button,binding,click=elvButton(action)
-    if button then
-        if not button.HookScript then return end
-    elseif not (action:match('^ACTIONBUTTON%d+$') and type(ActionButtonDown)=='function')
-        and not (action:match('^MULTIACTIONBAR[1-4]BUTTON%d+$') and type(MultiActionButtonDown)=='function') then
-        return
-    end
+    local button,binding,frame=elvButton(action)
+    if button and not button.HookScript then button=nil end
+    local stock=nativeBinding(action)
+    if not button and not stock then return end
+    local route={key=key,action=action,button=button,binding=binding,frame=frame,stock=stock and action}
 
     -- A secure button's callbacks identify the button, not which of several
     -- bindings activated it. Do not attribute an ambiguous route to a key.
-    local function sameRoute(bound)
+    local function hasAlias(bound)
         for _,other in ipairs({GetBindingKey(bound)}) do
-            if other~=key then
-                local effective=GetBindingAction(other,true)
-                if effective and effective~='' and (effective==action or effective==binding or effective==click) then
-                    return true
-                end
-            end
+            if other~=key and reachesRoute(GetBindingAction(other,true),route) then return true end
         end
     end
-    if sameRoute(binding or action) or (click and click~=binding and sameRoute(click)) then return end
-    return {key=key,action=action,button=button}
+    if hasAlias(action) or (binding and binding~=action and hasAlias(binding)) then return end
+    if frame then
+        local command='CLICK '..frame
+        for _,suffix in ipairs({'',':',':LeftButton'}) do
+            if command..suffix~=action and hasAlias(command..suffix) then return end
+        end
+    end
+    return route
 end
 
 function T:CanObserveVisualKey(key)
@@ -61,9 +79,13 @@ end
 local function spellIdentity(spell,book)
     if type(spell)=='number' and not book then return spell end
     if GetSpellLink and spell then
-        local link=GetSpellLink(spell,book)
+        local link
+        if book then link=GetSpellLink(spell,book) else link=GetSpellLink(spell) end
         local id=link and tonumber(link:match('spell:(%d+)'))
         if id then return id end
+    end
+    if book and type(spell)=='number' and GetSpellName then
+        return nil,GetSpellName(spell,book)
     end
     if type(spell)=='string' and spell~='' then return nil,spell end
 end
@@ -92,12 +114,23 @@ local function buttonSpell(button,mouse)
     if not slot or not GetActionInfo then return end
     local action,id,book,spellId=GetActionInfo(slot)
     if action=='spell' then
-        if tonumber(spellId) then return tonumber(spellId) end
+        spellId=tonumber(spellId)
+        if spellId and spellId>0 then return spellId end
         if book=='spell' or book=='pet' then return spellIdentity(id,book) end
         return spellIdentity(id)
     elseif action=='macro' then
         return macroSpell(id)
     end
+end
+
+local function sameSpell(id,name,trackedId)
+    if id==trackedId then return true end
+    local trackedName,trackedRank=GetSpellInfo(trackedId)
+    if not trackedName then return false end
+    if not id then return trackedName==name end
+    local actionName,actionRank=GetSpellInfo(id)
+    return actionName==trackedName and actionRank~=trackedRank
+        and ((actionRank and actionRank~='') or (trackedRank and trackedRank~=''))
 end
 
 local function paint(icon,strength)
@@ -146,15 +179,18 @@ local function updatePulses(_,state)
 end
 
 local function flash(T,state,route,button,mouse)
-    if not route or GetBindingAction(route.key,true)~=route.action then return end
+    if not route or not reachesRoute(GetBindingAction(route.key,true),route) then return end
     local id,name=buttonSpell(button,mouse)
     if not id and not name then return end
     for _,h in pairs(T.holders) do
         if h.frame:IsVisible() then
             for _,icon in ipairs(h.icons) do
                 local item=icon.abilityState
-                if icon:IsVisible() and item and item.spellId and state.entries[item.id]==route.key
-                    and (id==item.spellId or (not id and GetSpellInfo(item.spellId)==name)) then
+                local assigned=item and state.entries[item.id]
+                local shared=item and state.sharedKeys[item.spellId]
+                if icon:IsVisible() and item and item.spellId
+                    and (assigned==route.key or (not assigned and shared and shared[route.key]))
+                    and sameSpell(id,name,item.spellId) then
                     if not icon.pressTint then makePulse(icon) end
                     local pushed=button.GetPushedTexture and button:GetPushedTexture()
                     local texture=pushed and pushed.GetTexture and pushed:GetTexture()
@@ -186,16 +222,18 @@ local function watchButton(T,state,button)
     button:HookScript('OnMouseDown',physicalMouse)
     button:HookScript('OnMouseUp',physicalMouse)
     button:HookScript('PreClick',function(frame,mouse)
-        if mouse~='LeftButton' or (mouseChanged and GetTime()-mouseChanged<0.05)
-            or (IsMouseButtonDown and IsMouseButtonDown(mouse) and frame:IsMouseOver()) then return end
-        flash(T,state,state.buttons[frame],frame,mouse)
+        if (mouse and mouse~='' and mouse~='LeftButton')
+            or (mouseChanged and GetTime()-mouseChanged<0.05) then return end
+        local pressed=IsMouseButtonDown and IsMouseButtonDown('LeftButton')
+        if (pressed==true or pressed==1) and (not frame.IsMouseOver or frame:IsMouseOver()) then return end
+        flash(T,state,state.buttons[frame],frame,'LeftButton')
     end)
 end
 
 function T:InitializeKeyVisual()
     if self.keyVisual then return end
     local driver=CreateFrame('Frame')
-    local state={driver=driver,pulses={},hooked={},buttons={},commands={},entries={}}
+    local state={driver=driver,pulses={},hooked={},buttons={},commands={},entries={},sharedKeys={}}
     self.keyVisual=state
     self.keyVisualDriver=driver
     state.update=function(frame) updatePulses(frame,state) end
@@ -236,24 +274,30 @@ function T:RefreshVisualKeys()
     for icon in pairs(state.pulses) do paint(icon,0) end
     state.pulses={}
     state.driver:SetScript('OnUpdate',nil)
-    state.buttons,state.commands,state.entries={},{},{}
+    state.buttons,state.commands,state.entries,state.sharedKeys={},{},{},{}
     if not A.db or not A.db.abilities or self:IsProfileOff() then return end
+    local cfg=self:Config()
+    local share=cfg.panelMode=='strip' and cfg.stripHighestOnly
     local keys={}
-    for _,entry in ipairs(self:Config().entries) do
+    for _,entry in ipairs(cfg.entries) do
         local key=entry.enabled and entry.kind=='spell' and entry.pressKey
         if type(key)=='string' and key~='' then
             if keys[key]==nil then keys[key]=observeKey(key) or false end
             local route=keys[key]
+            state.entries[entry.uid]=key
             if route then
                 if route.button then
                     if not inCombat or state.hooked[route.button] then
                         state.buttons[route.button]=route
                         watchButton(self,state,route.button)
                     end
-                else
-                    state.commands[route.action]=route
                 end
-                state.entries[entry.uid]=key
+                if route.stock then state.commands[route.stock]=route end
+                if share and entry.spellId then
+                    local shared=state.sharedKeys[entry.spellId] or {}
+                    shared[key]=true
+                    state.sharedKeys[entry.spellId]=shared
+                end
             end
         end
     end
