@@ -76,63 +76,6 @@ function T:CanObserveVisualKey(key)
     return observeKey(key)~=nil
 end
 
-local function spellIdentity(spell,book)
-    if type(spell)=='number' and not book then return spell end
-    if GetSpellLink and spell then
-        local link
-        if book then link=GetSpellLink(spell,book) else link=GetSpellLink(spell) end
-        local id=link and tonumber(link:match('spell:(%d+)'))
-        if id then return id end
-    end
-    if book and type(spell)=='number' and GetSpellName then
-        return nil,GetSpellName(spell,book)
-    end
-    if type(spell)=='string' and spell~='' then return nil,spell end
-end
-
-local function macroSpell(macro)
-    if macro and GetMacroSpell then
-        local spell=GetMacroSpell(macro)
-        return spellIdentity(spell)
-    end
-end
-
-local function buttonSpell(button,mouse)
-    if not button then return end
-    local function attribute(key)
-        if SecureButton_GetModifiedAttribute and button.GetAttribute then
-            return SecureButton_GetModifiedAttribute(button,key,mouse)
-        elseif button.GetAttribute then
-            return button:GetAttribute(key)
-        end
-    end
-    local kind=attribute('type') or button._state_type
-    if kind=='spell' then return spellIdentity(attribute('spell') or button._state_action) end
-    if kind=='macro' then return macroSpell(attribute('macro')) end
-    if kind and kind~='action' then return end
-    local slot=attribute('action') or button._state_action or button.action
-    if not slot or not GetActionInfo then return end
-    local action,id,book,spellId=GetActionInfo(slot)
-    if action=='spell' then
-        spellId=tonumber(spellId)
-        if spellId and spellId>0 then return spellId end
-        if book=='spell' or book=='pet' then return spellIdentity(id,book) end
-        return spellIdentity(id)
-    elseif action=='macro' then
-        return macroSpell(id)
-    end
-end
-
-local function sameSpell(id,name,trackedId)
-    if id==trackedId then return true end
-    local trackedName,trackedRank=GetSpellInfo(trackedId)
-    if not trackedName then return false end
-    if not id then return trackedName==name end
-    local actionName,actionRank=GetSpellInfo(id)
-    return actionName==trackedName and actionRank~=trackedRank
-        and ((actionRank and actionRank~='') or (trackedRank and trackedRank~=''))
-end
-
 local function paint(icon,strength)
     icon.pressTint:SetAlpha((icon.pressTexture and 0.8 or 0.15)*strength)
     for _,edge in ipairs(icon.pressEdges) do edge:SetAlpha(strength) end
@@ -178,10 +121,10 @@ local function updatePulses(_,state)
     if not next(state.pulses) then state.driver:SetScript('OnUpdate',nil) end
 end
 
-local function flash(T,state,route,button,mouse)
+local function flash(T,state,route,button)
     if not route or not reachesRoute(GetBindingAction(route.key,true),route) then return end
-    local id,name=buttonSpell(button,mouse)
-    if not id and not name then return end
+    -- The action bar only reports the bound key. The PhoenixPanel assignment
+    -- selects the visual target, even if the button is empty or runs a macro.
     for _,h in pairs(T.holders) do
         if h.frame:IsVisible() then
             for _,icon in ipairs(h.icons) do
@@ -189,10 +132,9 @@ local function flash(T,state,route,button,mouse)
                 local assigned=item and state.entries[item.id]
                 local shared=item and state.sharedKeys[item.spellId]
                 if icon:IsVisible() and item and item.spellId
-                    and (assigned==route.key or (not assigned and shared and shared[route.key]))
-                    and sameSpell(id,name,item.spellId) then
+                    and (assigned==route.key or (not assigned and shared and shared[route.key])) then
                     if not icon.pressTint then makePulse(icon) end
-                    local pushed=button.GetPushedTexture and button:GetPushedTexture()
+                    local pushed=button and button.GetPushedTexture and button:GetPushedTexture()
                     local texture=pushed and pushed.GetTexture and pushed:GetTexture()
                     icon.pressTexture=type(texture)=='string' or type(texture)=='number'
                     if icon.pressTexture then
@@ -226,7 +168,7 @@ local function watchButton(T,state,button)
             or (mouseChanged and GetTime()-mouseChanged<0.05) then return end
         local pressed=IsMouseButtonDown and IsMouseButtonDown('LeftButton')
         if (pressed==true or pressed==1) and (not frame.IsMouseOver or frame:IsMouseOver()) then return end
-        flash(T,state,state.buttons[frame],frame,'LeftButton')
+        flash(T,state,state.buttons[frame],frame)
     end)
 end
 
@@ -250,14 +192,14 @@ function T:InitializeKeyVisual()
             elseif BonusActionBarFrame and BonusActionBarFrame:IsShown() then
                 prefix='BonusActionButton'
             end
-            flash(self,state,route,_G[prefix..id],'LeftButton')
+            flash(self,state,route,_G[prefix..id])
         end)
     end
     if type(MultiActionButtonDown)=='function' then
         hooksecurefunc('MultiActionButtonDown',function(bar,id)
             local prefix=multiCommands[bar]
             local route=prefix and state.commands[prefix..id]
-            if route then flash(self,state,route,_G[bar..'Button'..id],'LeftButton') end
+            if route then flash(self,state,route,_G[bar..'Button'..id]) end
         end)
     end
     local bars=E.GetModule and E:GetModule('ActionBars',true)

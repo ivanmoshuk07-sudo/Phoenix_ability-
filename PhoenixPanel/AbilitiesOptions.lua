@@ -105,7 +105,7 @@ function A:InsertAbilityOptions(parent)
             spellText=''
             selectEditor()
         end}
-        args.help={type='description',name='Назначьте той же способности действующую клавишу с игровой панели. Esc снимает назначение.',order=0.1,width='full'}
+        args.help={type='description',name='Назначьте записи клавишу с игровой панели для визуального эффекта нажатия. Esc снимает назначение.',order=0.1,width='full'}
         for number,p in ipairs(cfg().entries) do
             local uid=p.uid
             local name=p.name or (p.spellId and GetSpellInfo(p.spellId)) or 'Без названия'
@@ -128,10 +128,10 @@ function A:InsertAbilityOptions(parent)
                 end},
                 pressKey={type='keybinding',name=visualKeyControl and '' or 'Назначить клавишу',order=2.1,width=1.2,
                     dialogControl=visualKeyControl,hidden=p.kind~='spell',disabled=InCombatLockdown,
-                    desc='Вспышка при нажатии действующей игровой клавиши. Esc снимает назначение в PhoenixPanel.',
+                    desc='Эффект нажатия для этой записи при использовании выбранной клавиши. Esc снимает назначение в PhoenixPanel.',
                     get=function() local _,entry=locate(uid); return entry and entry.pressKey or '' end,
                     validate=function(_,value)
-                        return value=='' or T:CanObserveVisualKey(value) or 'Выберите клавишу, назначенную на кнопку способности в WoW или ElvUI.'
+                        return value=='' or T:CanObserveVisualKey(value) or 'Выберите клавишу, назначенную на кнопку панели WoW или ElvUI.'
                     end,
                     set=function(_,value)
                         local _,entry=locate(uid)
@@ -264,7 +264,13 @@ function A:InsertAbilityOptions(parent)
     root={type='group',name='Динамическая панель',order=6,childGroups='tab',args={
         appearance=self:AbilityAppearanceOptions(T,
             'Порядок зависит от режима и приоритета. Расположение настраивается через «Перенос рамок» ElvUI.',isOff),
-        tracking={type='group',name='Способности',order=2,childGroups='tab',disabled=isOff,args={list=list,editor=editor}}
+        tracking={type='group',name='Способности',order=2,childGroups='tab',disabled=isOff,args={
+            stripHighestOnly={type='toggle',name='Только лучший вариант способности',order=0,width='full',
+                desc='В «Полосе применений» из записей одной способности с разными триггерами выбирается подходящая запись с самым высоким приоритетом. Повторы по ГКД и стакам учитываются отдельно.',
+                get=function() return cfg().stripHighestOnly==true end,
+                set=function(_,value) cfg().stripHighestOnly=value; T:Apply() end},
+            list=list,editor=editor
+        }}
     }}
     local appearanceArgs=root.args.appearance.args.icons.args
     appearanceArgs.panelMode={type='select',name='Режим панели',order=0,width=1.35,
@@ -273,11 +279,6 @@ function A:InsertAbilityOptions(parent)
         set=function(_,value) cfg().panelMode=value; T:Apply() end}
     appearanceArgs.stripInfo={type='description',order=0.1,width='full',hidden=function() return not stripMode() end,
         name='Прогноз по ГКД идёт после автоатаки. Синий цвет означает нехватку ресурса. Первый слот входит в лимит иконок.'}
-    appearanceArgs.stripHighestOnly={type='toggle',name='Лучший вариант способности',order=0.2,width='full',
-        desc='Если одна способность добавлена с разными триггерами, использовать в полосе только подходящую запись с самым высоким приоритетом. Повторы выбранной записи по ГКД и стакам учитываются отдельно.',
-        hidden=function() return not stripMode() end,
-        get=function() return cfg().stripHighestOnly==true end,
-        set=function(_,value) cfg().stripHighestOnly=value; T:Apply() end}
     for _,key in ipairs({'rows','growX','growY'}) do appearanceArgs[key].hidden=stripMode end
     root.args.autoAttack={type='group',name='Автоатака',order=3,disabled=isOff,
         get=function(info) return cfg().autoAttack[info[#info]] end,

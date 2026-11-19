@@ -3,6 +3,7 @@ local T=A.Abilities
 
 local moveTime=0.24
 local castTime=0.5
+local retiredTime=0.75
 local castLevelOffset=16
 
 local function itemKey(item)
@@ -74,7 +75,7 @@ local function animate(h,state)
 end
 
 local function startStrip(h)
-    local state={pool=h.icons,active={},departures={},suppressed={}}
+    local state={pool=h.icons,active={},retired={},departures={},suppressed={}}
     for _,icon in ipairs(state.pool) do icon:Hide(); icon.layout=nil end
     h.icons={}
     h.castStrip=true
@@ -102,6 +103,28 @@ function T:PositionCastStripIcon(h,icon,x,y,width,height)
     h.frame:SetScript('OnUpdate',h.castStripState.update)
 end
 
+local function trimRetired(state,now,capacity)
+    for i=#state.retired,1,-1 do
+        if state.retired[i].expires<=now then
+            recycle(state,table.remove(state.retired,i).icon)
+        end
+    end
+    while #state.retired>capacity do
+        recycle(state,table.remove(state.retired,1).icon)
+    end
+end
+
+local function takeRetired(state,key)
+    for i,data in ipairs(state.retired) do
+        if data.key==key then return table.remove(state.retired,i).icon end
+    end
+end
+
+local function castableIcon(icon)
+    local item=icon.abilityState
+    return item and item.spellId and not item.autoAttack and icon.stripX~=nil
+end
+
 function T:RenderCastStrip(plate,items)
     local h=self.holders[plate] or self:NewHolder(plate)
     local state=h.castStripState or startStrip(h)
@@ -113,6 +136,7 @@ function T:RenderCastStrip(plate,items)
 
     local visible,keys={},{}
     local capacity=self:Config().appearance.perRow
+    trimRetired(state,now,capacity)
     for i,item in ipairs(items) do
         if state.suppressed[itemKey(item)] then
             item=i==1 and self:AutoItem() or nil
@@ -123,48 +147,77 @@ function T:RenderCastStrip(plate,items)
             if #visible==capacity then break end
         end
     end
-    for key,icon in pairs(state.active) do
-        if not keys[key] and not state.departures[icon] then recycle(state,icon) end
+    for _,icon in ipairs(h.icons) do
+        local item=icon.abilityState
+        local key=item and itemKey(item)
+        if not keys[key] and not state.departures[icon] then
+            if castableIcon(icon) and icon:IsShown() then
+                -- A cooldown or trigger can remove this frame before the
+                -- client's success event arrives. Keep its last position.
+                icon:Hide()
+                icon.stripMove=nil
+                state.retired[#state.retired+1]={key=key,icon=icon,expires=now+retiredTime}
+            else
+                recycle(state,icon)
+            end
+        end
     end
 
     local active={}
     h.icons={}
     for i,item in ipairs(visible) do
         local key=itemKey(item)
-        local icon=state.active[key] or table.remove(state.pool)
+        local icon=state.active[key] or takeRetired(state,key) or table.remove(state.pool)
         h.icons[i]=icon or self:Icon(h,i)
         active[key]=h.icons[i]
     end
+    trimRetired(state,now,capacity)
     state.active=active
     self:Render(plate,visible)
 end
 
-local function castIcon(h,spellId,spellName)
+local function matchesName(icon,spellName)
+    return spellName and GetSpellInfo(icon.abilityState.spellId)==spellName
+end
+
+local function castIcon(h,state,spellId,spellName)
     local rankMatch
     for _,icon in ipairs(h.icons) do
-        local item=icon.abilityState
-        if item and item.spellId and not item.autoAttack and icon:IsShown() then
-            if spellId and item.spellId==spellId then return icon end
-            if not rankMatch and spellName and GetSpellInfo(item.spellId)==spellName then rankMatch=icon end
+        if castableIcon(icon) and icon:IsShown() then
+            if spellId and icon.abilityState.spellId==spellId then return icon end
+            if not rankMatch and matchesName(icon,spellName) then rankMatch=icon end
         end
     end
-    return rankMatch
+    local exactRetired,nameRetired
+    for i,data in ipairs(state.retired) do
+        local icon=data.icon
+        if spellId and icon.abilityState.spellId==spellId then
+            if not exactRetired or state.retired[exactRetired].expires<data.expires then exactRetired=i end
+        elseif not nameRetired or state.retired[nameRetired].expires<data.expires then
+            if matchesName(icon,spellName) then nameRetired=i end
+        end
+    end
+    if exactRetired then return table.remove(state.retired,exactRetired).icon end
+    if rankMatch then return rankMatch end
+    if nameRetired then return table.remove(state.retired,nameRetired).icon end
 end
 
 function T:OnStripCast(spellId,spellName)
     for plate,h in pairs(self.holders) do
         local state=h.castStripState
         if state and h.frame:IsVisible() then
-            local icon=castIcon(h,spellId,spellName)
+            local started=GetTime()
+            trimRetired(state,started,self:Config().appearance.perRow)
+            local icon=castIcon(h,state,spellId,spellName)
             if icon then
                 local used=icon.abilityState
-                local started=GetTime()
                 state.suppressed[itemKey(used)]=started+castTime
                 state.departures[icon]={start=started,x=icon.stripX,y=icon.stripY,width=icon.stripWidth,height=icon.stripHeight}
                 icon.stripMove=nil
                 liftCastIcon(h,icon)
                 icon:EnableMouse(false)
                 if GameTooltip:IsOwned(icon) then GameTooltip:Hide() end
+                icon:Show()
                 h.frame:SetScript('OnUpdate',state.update)
                 self:RenderCastStrip(plate,state.items)
                 return used
@@ -179,6 +232,7 @@ local function resetHolder(h)
     h.frame:SetScript('OnUpdate',nil)
     for _,icon in ipairs(h.icons) do recycle(state,icon) end
     for icon in pairs(state.departures) do recycle(state,icon) end
+    for _,data in ipairs(state.retired) do recycle(state,data.icon) end
     h.icons=state.pool
     h.castStripState=nil
     h.castStrip=nil
