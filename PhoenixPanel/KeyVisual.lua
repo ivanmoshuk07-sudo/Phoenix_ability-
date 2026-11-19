@@ -3,6 +3,7 @@ local E=ElvUI[1]
 local T=A.Abilities
 
 local pulseTime=0.2
+local mouseButtons={LeftButton=true,RightButton=true,MiddleButton=true,Button4=true,Button5=true}
 local multiBars={'MultiBarBottomLeft','MultiBarBottomRight','MultiBarRight','MultiBarLeft'}
 local multiCommands={}
 for i,bar in ipairs(multiBars) do multiCommands[bar]='MULTIACTIONBAR'..i..'BUTTON' end
@@ -136,10 +137,12 @@ local function flash(T,state,route,button)
                     if not icon.pressTint then makePulse(icon) end
                     local pushed=button and button.GetPushedTexture and button:GetPushedTexture()
                     local texture=pushed and pushed.GetTexture and pushed:GetTexture()
-                    icon.pressTexture=type(texture)=='string' or type(texture)=='number'
+                    icon.pressTexture=(type(texture)=='string' and texture~='')
+                        or (type(texture)=='number' and texture>0)
                     if icon.pressTexture then
                         icon.pressTint:SetTexture(texture)
-                        icon.pressTint:SetTexCoord(pushed:GetTexCoord())
+                        if pushed.GetTexCoord then icon.pressTint:SetTexCoord(pushed:GetTexCoord())
+                        else icon.pressTint:SetTexCoord(0,1,0,1) end
                     else
                         icon.pressTint:SetTexture(0.58,0.85,1,1)
                         icon.pressTint:SetTexCoord(0,1,0,1)
@@ -147,28 +150,53 @@ local function flash(T,state,route,button)
                     state.pulses[icon]={id=item.id,spellId=item.spellId,occurrence=item.stripOccurrence,expires=GetTime()+pulseTime}
                     paint(icon,1)
                     state.driver:SetScript('OnUpdate',state.update)
-                    return
+                    return true
                 end
             end
         end
     end
 end
 
+local function mouseIsDown(mouse)
+    local pressed=mouseButtons[mouse] and IsMouseButtonDown and IsMouseButtonDown(mouse)
+    return pressed==true or pressed==1
+end
+
 local function watchButton(T,state,button)
     if state.hooked[button] then return end
     state.hooked[button]=true
-    local mouseChanged
-    local function physicalMouse()
-        mouseChanged=GetTime()
+    local physicalMouse,releasedAt,preHandled
+
+    local function isPhysicalClick(mouse)
+        local over=button.IsMouseOver and button:IsMouseOver()
+        local hovered=over==true or over==1
+        if hovered and mouseIsDown(mouse) then return true end
+        if not physicalMouse then return false end
+        if (releasedAt and GetTime()-releasedAt>=0.05)
+            or (not releasedAt and not hovered and not mouseIsDown(physicalMouse)) then
+            physicalMouse,releasedAt=nil,nil
+            return false
+        end
+        return mouse==physicalMouse or mouse==nil or mouse==''
     end
-    button:HookScript('OnMouseDown',physicalMouse)
-    button:HookScript('OnMouseUp',physicalMouse)
-    button:HookScript('PreClick',function(frame,mouse)
-        if (mouse and mouse~='' and mouse~='LeftButton')
-            or (mouseChanged and GetTime()-mouseChanged<0.05) then return end
-        local pressed=IsMouseButtonDown and IsMouseButtonDown('LeftButton')
-        if (pressed==true or pressed==1) and (not frame.IsMouseOver or frame:IsMouseOver()) then return end
-        flash(T,state,state.buttons[frame],frame)
+
+    -- ElvUI dispatches key bindings as clicks. Only a physical button state
+    -- can make these mouse callbacks evidence of a mouse press.
+    button:HookScript('OnMouseDown',function(_,mouse)
+        if mouseIsDown(mouse) then physicalMouse,releasedAt=mouse,nil end
+    end)
+    button:HookScript('OnMouseUp',function(_,mouse)
+        if physicalMouse and mouse==physicalMouse then releasedAt=GetTime() end
+    end)
+    button:HookScript('PreClick',function(_,mouse)
+        preHandled=isPhysicalClick(mouse) or flash(T,state,state.buttons[button],button)
+    end)
+    button:HookScript('PostClick',function(_,mouse)
+        local handled=preHandled
+        preHandled=nil
+        if not handled and not isPhysicalClick(mouse) then
+            flash(T,state,state.buttons[button],button)
+        end
     end)
 end
 
