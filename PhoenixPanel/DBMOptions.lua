@@ -6,7 +6,7 @@ local function cfg() return A.db.dbm end
 local function apply() D:Apply() end
 local function fontValues()
     local values={DEFAULT='Шрифт клиента'}
-    if E.Libs.LSM then for name,path in pairs(E.Libs.LSM:HashTable('font')) do values[name]=name end end
+    if E.Libs.LSM then for name in pairs(E.Libs.LSM:HashTable('font')) do values[name]=name end end
     values[cfg().count.font]=cfg().count.font; values[cfg().duration.font]=cfg().duration.font
     return values
 end
@@ -18,11 +18,13 @@ local function selectOption(name,order,values)
 end
 local function toggle(name,order) return {type='toggle',name=name,order=order} end
 local function textGroup(key,title,order)
-    local args={show=toggle('Показывать',1),font=selectOption('Шрифт',2,fontValues),size=range('Размер шрифта',3,4,60),
-        outline=selectOption('Граница шрифта',4,{['']='Без обводки',OUTLINE='Outline',THICKOUTLINE='Thick outline',['MONOCHROME,OUTLINE']='Monochrome outline'}),
+    local args={show=toggle('Показывать',1),font=selectOption('Шрифт',2,fontValues),size=range('Размер',3,4,60),
+        outline=selectOption('Обводка',4,{['']='Без обводки',OUTLINE='Outline',THICKOUTLINE='Thick outline',['MONOCHROME,OUTLINE']='Monochrome outline'}),
         point=selectOption('Позиция',5,points),x=range('Отступ по X',6,-100,100),y=range('Отступ по Y',7,-100,100)}
-    if key=='duration' then args.swipe=toggle('Восстановление (затемнение)',8) end
-    return {type='group',name=title,order=order,guiInline=true,
+    if key=='duration' then
+        args.swipe={type='toggle',name='Затемнение',order=8,desc='Показывать ход таймера затемнением иконки.'}
+    end
+    return {type='group',name=title,order=order,
         get=function(info) return cfg()[key][info[#info]] end,
         set=function(info,value) cfg()[key][info[#info]]=value; apply() end,args=args}
 end
@@ -138,7 +140,9 @@ local function browser(kind,title,order)
                 get=function() return cfg().selected[key]~=false end,
                 set=function(info,value) if value then cfg().selected[key]=nil else cfg().selected[key]=false end; apply() end}
         end
-        if not next(args) then args.empty={type='description',name='Нет подходящих таймеров. Для дополнительных способностей загрузите модуль этого босса в DBM и обновите список.',order=1} end
+        if not next(args) then
+            args.empty={type='description',name='Таймеры не найдены. Загрузите модуль босса в DBM и обновите список.',order=1}
+        end
         group.args.spells.args=args
     end
     group.args={
@@ -148,12 +152,15 @@ local function browser(kind,title,order)
         boss={type='select',name='Босс',order=2,values=function() return (bosses()) end,
             sorting=function() local _,sort=bosses(); return sort end,get=chooseBoss,
             set=function(info,value) state.boss=value; state.search=''; rebuild() end},
-        search={type='input',name='Поиск способностей',order=3,get=function() return state.search end,
+        search={type='input',name='Поиск',order=3,desc='Поиск по названию или ID таймера выбранного босса.',get=function() return state.search end,
             set=function(info,value) state.search=value; rebuild() end},
-        refresh={type='execute',name='Обновить из DBM',order=4,func=function() D:RefreshCatalog(); rebuild(); apply() end},
-        all={type='execute',name='Выбрать показанные',order=5,func=function() for key in pairs(abilities()) do cfg().selected[key]=nil end; apply() end},
-        none={type='execute',name='Снять показанные',order=6,func=function() for key in pairs(abilities()) do cfg().selected[key]=false end; apply() end},
-        spells={type='group',name='Отслеживать способности',guiInline=true,order=7,args={}}
+        refresh={type='execute',name='Обновить',order=4,desc='Загрузить таймеры из активных модулей DBM.',
+            func=function() D:RefreshCatalog(); rebuild(); apply() end},
+        all={type='execute',name='Включить список',order=5,desc='Включить только таймеры текущего списка. Остальные настройки не меняются.',
+            func=function() for key in pairs(abilities()) do cfg().selected[key]=nil end; apply() end},
+        none={type='execute',name='Выключить список',order=6,desc='Выключить таймеры текущего списка.',
+            func=function() for key in pairs(abilities()) do cfg().selected[key]=false end; apply() end},
+        spells={type='group',name='Таймеры',guiInline=true,order=7,args={}}
     }
     rebuild()
     return group
@@ -161,27 +168,39 @@ end
 
 function A:InsertDBMOptions(parent)
     registerSpellWidget()
+    local function panelDisabled() return not cfg().enabled end
     parent.dbm={type='group',name='DBM',order=7,childGroups='tree',args={
-        appearance={type='group',name='Оформление',order=1,
+        appearance={type='group',name='Оформление',order=1,childGroups='tab',
             get=function(info) return cfg()[info[#info]] end,
             set=function(info,value) cfg()[info[#info]]=value; apply() end,args={
-                enabled=toggle('Включить панель DBM',1),stack=toggle('Стакать одинаковые способности',2),desaturate=toggle('Обесцвечивание',3),keepAspect=toggle('Сохранить соотношение размеров',4),
-                size=range('Размер',5,6,60),height=range('Высота (без сохранения пропорций)',6,6,60),
-                perRow=range('Кол-во в ряду',7,1,20),rows=range('Рядов',8,1,5),spacing=range('Отступ',9,0,60),
-                x=range('Отступ по X',10,-100,100),y=range('Отступ по Y',11,-100,100),anchor=selectOption('Точка фиксации',12,points),
-                growX=selectOption('Рост по X',13,{LEFT='Влево',RIGHT='Вправо'}),growY=selectOption('Рост по Y',14,{UP='Вверх',DOWN='Вниз'}),
-                sort=selectOption('Сортировать по',15,{remaining='Оставшееся время',name='Название',spell='ID способности'}),
-                descending=toggle('Нисходящая сортировка',16),
-                test={type='execute',name=function() return D.testUntil and 'Остановить тест' or 'Тест' end,order=17,func=function() D:Test() end,disabled=function() return not cfg().enabled end},
-                nativeTest={type='execute',name='Тест через DBM',order=17.1,func=function() D:NativeTest() end,disabled=function() return not cfg().enabled end},
-                diagnostics={type='execute',name='Проверка подключения',order=17.2,func=function() D:Report() end},
-                status={type='description',order=18,width='full',name=function()
-                    return D.attached and 'DBM подключён. Большие таймеры отображаются на отдельной панели, независимо от выбранной цели. Перемещение: ElvUI → Перенос рамок.' or 'DBM не загружен. Тест оформления доступен без DBM.'
-                end},
-                count=textGroup('count','Количество стаков / номер применения DBM',20),duration=textGroup('duration','Длительность',21)
+                layout={type='group',name='Панель',order=1,args={
+                    enabled=toggle('Включить панель',1),
+                    stack={type='toggle',name='Группировать',order=2,desc='Объединять таймеры одной способности в одну иконку.'},
+                    desaturate=toggle('Обесцвечивать',3),keepAspect=toggle('Сохранять пропорции',4),
+                    size=range('Размер',5,6,60),height=range('Высота',6,6,60),
+                    perRow=range('Иконок в ряду',7,1,20),rows=range('Рядов',8,1,5),spacing=range('Промежуток',9,0,60),
+                    x=range('Отступ по X',10,-100,100),y=range('Отступ по Y',11,-100,100),
+                    anchor=selectOption('Точка фиксации',12,points),
+                    growX=selectOption('Рост по X',13,{LEFT='Влево',RIGHT='Вправо'}),
+                    growY=selectOption('Рост по Y',14,{UP='Вверх',DOWN='Вниз'}),
+                    sort=selectOption('Сортировка',15,{remaining='Оставшееся время',name='Название',spell='ID способности'}),
+                    descending=toggle('По убыванию',16),
+                    moveInfo={type='description',name='Чтобы переместить панель, откройте ElvUI → Перенос рамок.',order=17}
+                }},
+                count=textGroup('count','Числа',2),duration=textGroup('duration','Таймер',3),
+                tests={type='group',name='Тесты',order=4,args={
+                    status={type='description',order=1,name=function()
+                        return D.attached and 'DBM подключён. Панель показывает большие таймеры.' or 'DBM не загружен. Тест панели доступен без DBM.'
+                    end},
+                    test={type='execute',name=function() return D.testUntil and 'Остановить тест' or 'Тест панели' end,
+                        order=2,func=function() D:Test() end,disabled=panelDisabled},
+                    nativeTest={type='execute',name='Тест DBM',order=3,func=function() D:NativeTest() end,disabled=panelDisabled},
+                    diagnostics={type='execute',name='Подключение',order=4,desc='Вывести сведения о подключении DBM в чат.',
+                        func=function() D:Report() end}
+                }}
             }},
 
-        abilities={type='group',name='Выбор способностей',order=2,childGroups='tab',args={
+        abilities={type='group',name='Таймеры',order=2,childGroups='tab',args={
             raids=browser('RAID','Рейды',1),
             dungeons=browser('PARTY','Подземелья',2)
         }}

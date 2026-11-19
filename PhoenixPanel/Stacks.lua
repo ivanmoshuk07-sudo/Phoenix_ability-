@@ -112,8 +112,9 @@ function T:Render(plate,items)
 end
 
 local addOptions=T.AddRotationOptions
-function T:AddRotationOptions(args,getDraft)
-    addOptions(self,args,getDraft)
+function T:AddRotationOptions(args,getDraft,triggerFields,stackFields)
+    addOptions(self,args,getDraft,triggerFields)
+    args=stackFields or args
     local function p() return getDraft() end
     local function cfg() return p() and T:StackConfig(p()) end
     local form,owner={unit='player',kind='buff',id=''},nil
@@ -129,7 +130,7 @@ function T:AddRotationOptions(args,getDraft)
         get=function() return cfg() and cfg().enabled or false end,set=function(_,v) cfg().enabled=v end}
     local group={type='group',name='Источники стаков',order=7.8,guiInline=true,hidden=function() return not cfg() or not cfg().enabled end,
         get=function(info) return cfg() and cfg()[info[#info]] end,set=function(info,v) cfg()[info[#info]]=v;T.auraCacheTime=nil end,args={
-            mode={type='select',name='Чьи стаки отслеживать',order=1,values={own='Свой',other='Другие'}},
+            mode={type='select',name='Источник',order=1,values={own='Свой эффект',other='Другие эффекты'}},
             unit={type='select',name='На ком свой эффект',order=2,values={player='Игрок',target='Цель'},hidden=function() return not cfg() or cfg().mode~='own' end},
             kind={type='select',name='Свой эффект',order=3,values={buff='Баф',debuff='Дебаф'},hidden=function() return not cfg() or cfg().mode~='own' end},
             info={type='description',order=4,name='«Свой» использует ID отслеживаемой способности. Если ID накладываемого эффекта другой, выберите «Другие». Активный эффект без стаков = 1, отсутствующий = 0. Повтор одного ID на том же юните и с тем же типом не удваивает сумму.'}

@@ -8,6 +8,7 @@ local T=A.Abilities
 -- patching ElvUI's widgets or guessing their global names.
 local profileNameTyping
 local PROFILE_NAME_CONTROL='PhoenixPanelProfileNameInput'
+local VISUAL_KEY_CONTROL='PhoenixPanelVisualKey'
 local function RegisterProfileNameControl()
     local gui=E.Libs and E.Libs.AceGUI
     if not gui or gui:GetWidgetVersion(PROFILE_NAME_CONTROL) then return end
@@ -23,6 +24,36 @@ local function RegisterProfileNameControl()
         end)
         return widget
     end,1)
+end
+
+local function RegisterVisualKeyControl()
+    local gui=E.Libs and E.Libs.AceGUI
+    if not gui or not gui:GetWidgetVersion('Keybinding') then return end
+    if not gui:GetWidgetVersion(VISUAL_KEY_CONTROL) then
+        gui:RegisterWidgetType(VISUAL_KEY_CONTROL,function()
+            local widget=gui:Create('Keybinding')
+            widget.type=VISUAL_KEY_CONTROL
+            local setKey=widget.SetKey
+            function widget:SetKey(key)
+                self.visualKey=key
+                setKey(self,key)
+                if not key or key=='' then self.button:SetText('Назначить клавишу') end
+            end
+            function widget:GetKey() return self.visualKey end
+            widget.msgframe.msg:SetText('Нажмите игровую клавишу. Esc — снять назначение, повторный щелчок — отменить.')
+            widget.frame:HookScript('OnHide',function()
+                if widget.waitingForKey then
+                    widget.waitingForKey=nil
+                    widget.button:EnableKeyboard(false)
+                    widget.button:EnableMouseWheel(false)
+                    widget.button:UnlockHighlight()
+                    widget.msgframe:Hide()
+                end
+            end)
+            return widget
+        end,1)
+    end
+    return VISUAL_KEY_CONTROL
 end
 
 -- Rotation.lua (retained unmodified) makes all its renders TOOLTIP/100.
@@ -42,7 +73,6 @@ end
 local kind,spellText,resource='spell','','current'
 local draft,editing,status
 local function cfg() return A.db.abilities end
-local function selectOption(name,order,values) return {type='select',name=name,order=order,values=values} end
 local function toggle(name,order) return {type='toggle',name=name,order=order} end
 local function locate(uid)
     for index,p in ipairs(cfg().entries) do if p.uid==uid then return index,p end end
@@ -58,147 +88,204 @@ function A:InsertAbilityOptions(parent)
     -- The normal AceConfig 'set' callback still handles Enter/OK.
     profileNameTyping=function(value) newProfileName=value end
     RegisterProfileNameControl()
+    local visualKeyControl=RegisterVisualKeyControl()
     local function isOff() return T:IsProfileOff() end
     local function stripMode() return cfg().panelMode=='strip' end
     local function reset() draft=nil; editing=nil; status=nil end
+    local function selectEditor()
+        if E.Libs.AceConfigDialog then
+            E.Libs.AceConfigDialog:SelectGroup('ElvUI','phoenixPanel','abilities','tracking','editor')
+        end
+    end
     local function rebuild()
         if profile~=A.db then profile=A.db; reset() end
         local args={}
+        args.add={type='execute',name='Добавить запись',order=0,width=1.2,func=function()
+            reset()
+            spellText=''
+            selectEditor()
+        end}
+        args.help={type='description',name='Назначьте той же способности действующую клавишу с игровой панели. Esc снимает назначение.',order=0.1,width='full'}
         for number,p in ipairs(cfg().entries) do
             local uid=p.uid
             local name=p.name or (p.spellId and GetSpellInfo(p.spellId)) or 'Без названия'
             local label=number..'. '..name..' — '..T.kinds[p.kind]
             args['entry'..uid]={type='group',name=label,order=number,guiInline=true,args={
-                enabled={type='toggle',name='Отслеживать',order=1,
+                enabled={type='toggle',name='Включено',order=1,width=0.83,
                     image=function() return (p.spellId and select(3,GetSpellInfo(p.spellId))) or p.icon or 'Interface\\Icons\\INV_Misc_QuestionMark' end,
                     arg={spellId=p.spellId,text=name},dialogControl=p.kind~='resource' and A.DBM.spellWidgetRegistered and 'PhoenixPanelSpellCheck' or nil,
                     desc=p.kind=='resource' and 'Индикатор выбранного ресурса.' or ('Игровое описание: '..tostring(p.spellId)),
                     get=function() local _,entry=locate(uid); return entry and entry.enabled end,
                     set=function(info,value) local _,entry=locate(uid); if entry then entry.enabled=value; T:Apply() end end},
-                edit={type='execute',name='Изменить',order=2,func=function()
+                edit={type='execute',name='Изменить',order=2,width=0.73,func=function()
                     local _,entry=locate(uid)
-                    if entry then draft=T.Copy(entry); editing=uid; kind=entry.kind; spellText=tostring(entry.spellId or ''); resource=entry.resource or 'current'; status='Редактирование: '..name end
+                    if entry then
+                        draft=T.Copy(entry); editing=uid; kind=entry.kind
+                        spellText=tostring(entry.spellId or ''); resource=entry.resource or 'current'
+                        status='Редактирование — '..name
+                        selectEditor()
+                    end
                 end},
-                up={type='execute',name='Выше',order=3,disabled=function() return locate(uid)==1 end,func=function() local index=locate(uid); if index then T:Move(index,-1); rebuild() end end},
-                down={type='execute',name='Ниже',order=4,disabled=function() return locate(uid)==#cfg().entries end,func=function() local index=locate(uid); if index then T:Move(index,1); rebuild() end end},
-                delete={type='execute',name='Удалить',order=5,confirm=true,func=function()
+                pressKey={type='keybinding',name=visualKeyControl and '' or 'Назначить клавишу',order=2.1,width=1.2,
+                    dialogControl=visualKeyControl,hidden=p.kind~='spell',disabled=InCombatLockdown,
+                    desc='Вспышка при нажатии действующей игровой клавиши. Esc снимает назначение в PhoenixPanel.',
+                    get=function() local _,entry=locate(uid); return entry and entry.pressKey or '' end,
+                    validate=function(_,value)
+                        return value=='' or T:CanObserveVisualKey(value) or 'Выберите клавишу, назначенную на кнопку способности в WoW или ElvUI.'
+                    end,
+                    set=function(_,value)
+                        local _,entry=locate(uid)
+                        if not entry then return end
+                        entry.pressKey=value~='' and value or nil
+                        if draft and editing==uid then draft.pressKey=entry.pressKey end
+                        T:RefreshVisualKeys()
+                    end},
+                up={type='execute',name='Выше',order=3,width=0.53,disabled=function() return locate(uid)==1 end,func=function() local index=locate(uid); if index then T:Move(index,-1); rebuild() end end},
+                down={type='execute',name='Ниже',order=4,width=0.53,disabled=function() return locate(uid)==#cfg().entries end,func=function() local index=locate(uid); if index then T:Move(index,1); rebuild() end end},
+                delete={type='execute',name='Удалить',order=5,width=0.69,confirm=true,func=function()
                     local index=locate(uid); if index then T:Delete(index); if editing==uid then reset() end; rebuild() end
                 end}
             }}
         end
-        if not next(args) then args.empty={type='description',name='Список пока пуст. Найдите способность или выберите ресурс выше и добавьте его.',order=1} end
+        if #cfg().entries==0 then args.empty={type='description',name='Список пока пуст.',order=1,width='full'} end
         list.args=args
     end
+    local function draftValue(info) return draft and draft[info[#info]] end
+    local function setDraftValue(info,value)
+        if not draft then return end
+        local key=info[#info]
+        draft[key]=value
+        if key=='nextSwing' then draft.nextSwingOverride=value end
+    end
+    local function draftSection(name,order,args)
+        return {type='group',name=name,order=order,args=args,
+            hidden=function() return not draft end,get=draftValue,set=setDraftValue}
+    end
+    local function spellOnly() return not draft or draft.kind~='spell' end
+    local function auraOnly() return not draft or (draft.kind~='buff' and draft.kind~='debuff') end
+    local function resourceOnly() return not draft or draft.kind~='resource' end
+    local function entryStatus()
+        if not draft then return '' end
+        local state=T:Evaluate(draft,true)
+        if stripMode() and draft.kind=='spell' and state.noResource and state.conditionPassed
+            and not T:NextSwingEntry(draft) and T:StripSpellReadyAt(state)<math.huge then
+            return 'Участвует в прогнозе. Недостаточно ресурса.'
+        end
+        if not state.visible then return 'Сейчас скрыто. '..(state.hiddenReason or state.reason or 'Запись скрыта настройками показа.') end
+        return 'Условия показа выполнены. '..(state.reason or state.conditionText or '')
+    end
+    local function saveEntry()
+        if not draft then return end
+        for i,g in ipairs(T:PrepareTriggers(draft)) do
+            if g.enabled and g.auraCondition and (not g.auraConditionId or not GetSpellInfo(g.auraConditionId)) then
+                status='Триггер '..i..' — укажите ID существующего эффекта.'
+                return
+            end
+        end
+        local index=editing and locate(editing)
+        if editing and not index then reset(); status='Запись уже удалена.'; return end
+        T:Save(draft,index)
+        reset()
+        status='Настройки сохранены.'
+        rebuild()
+        if E.Libs.AceConfigDialog then
+            E.Libs.AceConfigDialog:SelectGroup('ElvUI','phoenixPanel','abilities','tracking','list')
+        end
+    end
+    local abilityFields={
+        found={type='description',order=1,width='full',name=function() return draft and draft.name or '' end,
+            image=function() return draft and draft.icon or '' end,imageWidth=26,imageHeight=26},
+        mode={type='select',name='Показывать',order=2,width=1.3,values={always='Всегда',available='При готовности / эффекте'}},
+        unit={type='select',name='Отслеживать на',order=3,width=1.1,values=T.units,
+            hidden=function() return not draft or draft.kind=='spell' or draft.resource=='targethealth' end},
+        showGCD={type='toggle',name='Показывать ГКД',order=4,width=1.1,hidden=spellOnly},
+        checkRange={type='toggle',name='Дальность до цели',order=5,width=1.2,
+            desc='Учитывать дальность при показе доступности способности.',hidden=spellOnly},
+        onlyMine={type='toggle',name='Только мои ауры',order=5.1,width=1.15,hidden=auraOnly},
+        resourcePercent={type='toggle',name='В процентах',order=5.2,width=1.1,hidden=resourceOnly},
+        priorityTitle={type='header',name='Приоритет',order=6,hidden=function() return not draft or draft.kind=='resource' end},
+        nextSwing={type='toggle',name='Усилитель автоатаки',order=6.1,width=1.3,
+            desc='Отметить запись как замену или усиление следующего удара.',hidden=function() return not draft or draft.kind=='resource' end},
+        readyFirst={type='toggle',name='В начало при готовности',order=6.2,width=1.5,
+            desc='В классическом режиме запись поднимается в начало, если эффект отсутствует либо закончится к концу ГКД, или способность готова к этому моменту.',
+            hidden=function() return not draft or draft.kind=='resource' or stripMode() end},
+        castPriority={type='range',name='Приоритет',order=6.3,min=1,max=10,step=1,width=1.2,
+            desc='1 — самый высокий. При равном приоритете действует порядок списка.',
+            hidden=function() return not draft or not stripMode() or draft.kind=='resource' or T:NextSwingEntry(draft) end,
+            get=function() return draft and T:CastPriority(draft) or 5 end},
+        resourceTitle={type='header',name='Ресурс и замена',order=7.2,hidden=spellOnly},
+        liveStatus={type='description',name=entryStatus,order=13,width='full'},
+    }
+    local triggerFields,stackFields={},{}
+    T:AddRotationOptions(abilityFields,function() return draft end,triggerFields,stackFields)
+
+    abilityFields.showResource.name='Ресурс на иконке'
+    abilityFields.showResource.width=1.15
+    abilityFields.displayResource.name='Тип ресурса'
+    abilityFields.displayResource.width=1.15
+    abilityFields.replacementEnabled.name='Замена без ресурса'
+    abilityFields.replacementEnabled.width=1.3
+    abilityFields.replacementEnabled.desc='Показать выбранную способность при нехватке ресурса для этой записи.'
+    abilityFields.replacementId.name='ID замены'
+    abilityFields.resourcePosition={type='select',name='Положение числа',order=7.45,width=1.1,
+        values={BOTTOM='Под иконкой',TOP='Над иконкой'},
+        hidden=function() return spellOnly() or not draft.showResource end,
+        get=function() return draft and draft.resourcePosition=='TOP' and 'TOP' or 'BOTTOM' end,
+        set=function(_,value) if draft then draft.resourcePosition=value end end}
+    abilityFields.resourceValuePosition={type='select',name='Положение числа',order=5.3,width=1.1,
+        values={ICON='На иконке',BOTTOM='Под иконкой',TOP='Над иконкой'},
+        hidden=resourceOnly,
+        get=function() return draft and (draft.resourcePosition=='TOP' or draft.resourcePosition=='BOTTOM') and draft.resourcePosition or 'ICON' end,
+        set=function(_,value) if draft then draft.resourcePosition=value end end}
+
+    local editor={type='group',name='Редактор',order=2,childGroups='tab',args={
+        kind={type='select',name='Что отслеживать',order=1,width=1.2,values=T.kinds,
+            get=function() return kind end,set=function(_,value) kind=value; reset() end},
+        spellId={type='input',name='ID заклинания',order=2,width=1.05,hidden=function() return kind=='resource' end,
+            get=function() return spellText end,set=function(_,value) spellText=value; reset() end},
+        resource={type='select',name='Ресурс',order=2,width=1.05,values=T.resources,hidden=function() return kind~='resource' end,
+            get=function() return resource end,set=function(_,value) resource=value; reset() end},
+        find={type='execute',name='Найти',order=3,width=0.7,func=function()
+            local found,err=T:Find(spellText,kind,resource)
+            draft=found; editing=nil; status=found and nil or err
+        end},
+        status={type='description',order=4,width='full',name=function() return status or 'Выберите тип записи, укажите ID или ресурс и нажмите «Найти».' end,
+            hidden=function() return draft~=nil and not status end},
+        save={type='execute',order=5,width=1.15,name=function() return editing and 'Сохранить' or 'Добавить' end,
+            hidden=function() return not draft end,func=saveEntry},
+        cancel={type='execute',name='Отмена',order=5.1,width=0.8,hidden=function() return not draft end,func=reset},
+        settings=draftSection('Основное',10,abilityFields),
+        triggerSettings=draftSection('Триггеры',11,triggerFields),
+        stackSettings=draftSection('Стаки',12,stackFields)
+    }}
+    editor.args.stackSettings.hidden=resourceOnly
+
+    list={type='group',name='Список',order=1,args={}}
     root={type='group',name='Динамическая панель',order=6,childGroups='tab',args={
         appearance=self:AbilityAppearanceOptions(T,
-            'Иконки следуют настройкам приоритета. У скрытых записей место освобождается. Панель перемещается через ElvUI → Перенос рамок.',isOff),
-        tracking={type='group',name='Выбор способностей',order=2,disabled=isOff,args={
-            kind={type='select',name='Тип отслеживания',order=1,values=T.kinds,get=function() return kind end,set=function(info,value) kind=value; reset() end},
-            spellId={type='input',name='ID способности',order=2,hidden=function() return kind=='resource' end,get=function() return spellText end,set=function(info,value) spellText=value; reset() end},
-            resource={type='select',name='Ресурс',order=2,values=T.resources,hidden=function() return kind~='resource' end,get=function() return resource end,set=function(info,value) resource=value; reset() end},
-            find={type='execute',name='Найти',order=3,func=function()
-                local found,err=T:Find(spellText,kind,resource)
-                draft=found; editing=nil; status=found and ('Найдено: '..found.name) or err
-            end},
-            status={type='description',order=4,name=function() return status or 'Выберите тип, введите ID и нажмите «Найти». Для ресурса ID не требуется.' end},
-            settings={type='group',name='Настройки найденной записи',order=5,guiInline=true,hidden=function() return not draft end,
-                get=function(info) return draft and draft[info[#info]] end,set=function(info,value) if draft then
-                    local key=info[#info]; draft[key]=value
-                    if key=='nextSwing' then draft.nextSwingOverride=value end
-                end end,args={
-                    found={type='description',order=1,name=function() return draft and draft.name or '' end,image=function() return draft and draft.icon or 'Interface\\Icons\\INV_Misc_QuestionMark' end,imageWidth=32,imageHeight=32},
-                    mode=selectOption('Показывать',2,{always='Всегда',available='Когда доступно / эффект активен'}),
-                    unit={type='select',name='На ком отслеживать',order=3,values=T.units,hidden=function() return not draft or draft.kind=='spell' or (draft.kind=='resource' and draft.resource=='targethealth') end},
-                    showGCD={type='toggle',name='Показывать ГКД',order=4,hidden=function() return not draft or draft.kind~='spell' end},
-                    nextSwing={type='toggle',name='Заменяет / усиливает следующую автоатаку',order=5.1,hidden=function() return not draft or draft.kind=='resource' end},
-                    readyFirst={type='toggle',name='Переносить в начало при готовности',order=5.2,desc='Переносит способность в очередь после автоатаки и её усилителей. Для заклинания перенос возможен уже во время ГКД или когда до конца собственного КД осталось не больше одного ГКД (обычно 1,5 сек), но только при достаточном ресурсе и доступности применения. Для бафа/дебафа перенос выполняется при отсутствии эффекта или когда он закончится к завершению текущего ГКД (при доступности заклинания). Сам список не переставляется. В полосе применений порядок определяет числовой приоритет.',hidden=function() return not draft or draft.kind=='resource' end},
-                    castPriority={type='range',name='Приоритет в полосе применений',order=5.3,min=1,max=10,step=1,
-                        desc='1 — самый высокий приоритет. При одинаковом приоритете раньше идёт запись выше в списке.',
-                        hidden=function() return not draft or not stripMode() or draft.kind=='resource' or T:NextSwingEntry(draft) end,
-                        get=function() return draft and T:CastPriority(draft) or 5 end},
-                    checkRange={type='toggle',name='Учитывать дальность до цели',order=5,hidden=function() return not draft or draft.kind~='spell' end},
-                    onlyMine={type='toggle',name='Только мои ауры',order=6,hidden=function() return not draft or (draft.kind~='buff' and draft.kind~='debuff') end},
-                    resourcePercent={type='toggle',name='Ресурс в процентах',order=7,hidden=function() return not draft or draft.kind~='resource' end},
-                    condition=toggle('Условие показа по ресурсу игрока',8),
-                    conditionResource={type='select',name='Тип ресурса условия',values=T.resources,order=9,hidden=function() return not draft or not draft.condition end},
-                    conditionOp={type='select',name='Сравнение',values={ge='Не меньше',le='Не больше',eq='Равно'},order=10,hidden=function() return not draft or not draft.condition end},
-                    conditionValue={type='input',name='Значение ресурса',order=11,hidden=function() return not draft or not draft.condition end,
-                        get=function() return tostring(draft and draft.conditionValue or 0) end,
-                        validate=function(info,value) local n=tonumber(value); return (n and n==n and math.abs(n)<=1000000000) and true or 'Введите число.' end,
-                        set=function(info,value) if draft then draft.conditionValue=tonumber(value) or 0 end end},
-                    conditionPercent={type='toggle',name='Сравнивать в процентах',order=12,hidden=function() return not draft or not draft.condition end},
-                    auraCondition=toggle('Условие бафа / дебафа',12.1),
-                    auraConditionMode={type='select',name='Условие',order=12.15,values={present='Присутствует',absent='Отсутствует'},hidden=function() return not draft or not draft.auraCondition end,get=function() return draft and draft.auraConditionMode or 'present' end},
-                    auraConditionKind={type='select',name='Тип эффекта условия',order=12.2,values={buff='Баф',debuff='Дебаф'},hidden=function() return not draft or not draft.auraCondition end},
-                    auraConditionUnit={type='select',name='На ком должен быть эффект',order=12.3,values={player='Игрок',target='Цель'},hidden=function() return not draft or not draft.auraCondition end},
-                    auraConditionId={type='input',name='ID бафа / дебафа условия',order=12.4,hidden=function() return not draft or not draft.auraCondition end,
-                        get=function() return draft and draft.auraConditionId and tostring(draft.auraConditionId) or '' end,
-                        validate=function(info,value) local id=tonumber(value); return (id and id>0 and id<2147483648 and id==math.floor(id) and GetSpellInfo(id)) and true or 'Введите ID существующего заклинания.' end,
-                        set=function(info,value) if draft then draft.auraConditionId=tonumber(value); T.auraCacheTime=nil end end},
-                    auraName={type='description',order=12.5,hidden=function() return not draft or not draft.auraCondition end,name=function() return draft and draft.auraConditionId and (GetSpellInfo(draft.auraConditionId) or 'Не найдено') or 'Укажите ID эффекта.' end},
-                    liveStatus={type='description',order=12.6,name=function()
-                        if not draft then return '' end
-                        local state=T:Evaluate(draft,true)
-                        if stripMode() and draft.kind=='spell' and state.noResource and state.conditionPassed
-                            and not T:NextSwingEntry(draft) and T:StripSpellReadyAt(state)<math.huge then
-                            return 'Участвует в прогнозе. Недостаточно ресурса.'
-                        end
-                        local replacement=''
-                        if T:NextSwingEntry(draft) then
-                            replacement=cfg().autoAttack.enabled and cfg().autoAttack.replace and 'Замена автоатакой включена. ' or 'Для замены включите автоатаку и замену в её вкладке. '
-                        end
-                        local why=replacement..(state.hiddenReason or state.conditionText or state.reason or 'Доступно.')
-                        local anchor=T:Anchor()
-                        if not anchor or not anchor:IsShown() then return 'Нет видимого фрейма для иконок. '..why end
-                        return (state.visible and 'Условия показа выполнены. ' or 'Сейчас скрыто. ')..why
-                    end},
-                    help={type='description',order=13,name='Доступная способность — обычного цвета. Нехватка ресурса — синий цвет без обесцвечивания. КД/ГКД не делают иконку серой; серый означает недоступность применения, например отсутствие прока. В режиме «Когда доступно» недоступные иконки скрываются. ГКД показывается только если закончится позже собственного КД, без надписи. Для усилителей автоатаки вместо КД/ГКД показан таймер оружия после первого удара. Очередь применения подсвечивается миганием; у дебафа — серым. Условия задаются в независимых триггерах ниже. Правило активации выбирается отдельно.'},
-                    save={type='execute',order=14,name=function() return editing and 'Сохранить изменения' or 'Добавить в список' end,func=function()
-                        if not draft then return end
-                        for i,g in ipairs(T:PrepareTriggers(draft)) do if g.enabled and g.auraCondition and (not g.auraConditionId or not GetSpellInfo(g.auraConditionId)) then status='Триггер '..i..': укажите ID существующего эффекта.'; return end end
-                        local index=editing and locate(editing)
-                        if editing and not index then reset(); status='Запись уже удалена.'; return end
-                        T:Save(draft,index); reset(); status='Настройки сохранены.'; rebuild()
-                    end},
-                    cancel={type='execute',name='Отменить',order=15,func=reset}
-                }},
-            list={type='group',name='Нумерованный список — порядок иконок',order=10,guiInline=true,args={}}
-        }}
+            'Порядок зависит от режима и приоритета. Расположение настраивается через «Перенос рамок» ElvUI.',isOff),
+        tracking={type='group',name='Способности',order=2,childGroups='tab',disabled=isOff,args={list=list,editor=editor}}
     }}
-    local appearanceArgs=root.args.appearance.args
-    appearanceArgs.panelMode={type='select',name='Режим динамической панели',order=0,
+    local appearanceArgs=root.args.appearance.args.icons.args
+    appearanceArgs.panelMode={type='select',name='Режим панели',order=0,width=1.35,
         values={classic='Классический',strip='Полоса применений'},
         get=function() return stripMode() and 'strip' or 'classic' end,
         set=function(_,value) cfg().panelMode=value; T:Apply() end}
     appearanceArgs.stripInfo={type='description',order=0.1,width='full',hidden=function() return not stripMode() end,
-        name='Первый слот занимает автоатака или её усилитель. Каждая следующая иконка показывает лучшую способность к своему шагу ГКД. Если к шагу ничего не готово, полоса переходит к ближайшему восстановлению. Нехватка ресурса окрашивает иконку в синий, сохраняя её место в прогнозе. «Кол-во в ряду» включает первый слот.'}
+        name='Прогноз по ГКД идёт после автоатаки. Синий цвет означает нехватку ресурса. Первый слот входит в лимит иконок.'}
     for _,key in ipairs({'rows','growX','growY'}) do appearanceArgs[key].hidden=stripMode end
-    T:AddRotationOptions(root.args.tracking.args.settings.args,function() return draft end)
-    local abilityFields=root.args.tracking.args.settings.args
-    abilityFields.showResource.name='Показывать ресурс у иконки'
-    abilityFields.displayResource.name='Какой ресурс показывать'
-    abilityFields.resourcePosition={type='select',name='Положение значения ресурса',order=7.45,
-        values={BOTTOM='Под иконкой',TOP='Над иконкой'},
-        hidden=function() return not draft or draft.kind~='spell' or not draft.showResource end,
-        get=function() return draft and draft.resourcePosition=='TOP' and 'TOP' or 'BOTTOM' end,
-        set=function(info,value) if draft then draft.resourcePosition=value end end}
-    abilityFields.resourceValuePosition={type='select',name='Положение числа ресурса',order=7.1,
-        values={ICON='На иконке (как раньше)',BOTTOM='Под иконкой',TOP='Над иконкой'},
-        hidden=function() return not draft or draft.kind~='resource' end,
-        get=function() return draft and (draft.resourcePosition=='TOP' or draft.resourcePosition=='BOTTOM') and draft.resourcePosition or 'ICON' end,
-        set=function(info,value) if draft then draft.resourcePosition=value end end}
     root.args.autoAttack={type='group',name='Автоатака',order=3,disabled=isOff,
         get=function(info) return cfg().autoAttack[info[#info]] end,
         set=function(info,value) cfg().autoAttack[info[#info]]=value; T:Apply() end,args={
-            enabled=toggle('Отслеживать автоатаку',1),
-            showTimer=toggle('Показывать таймер до следующего удара',2),
-            showResource=toggle('Показывать ресурс персонажа',3),
-            resource=selectOption('Ресурс',4,T.autoResources),
-            resourcePosition={type='select',name='Положение значения ресурса',order=4.1,
+            enabled=toggle('Отслеживать',1),
+            showTimer=toggle('Таймер удара',2),
+            showResource=toggle('Ресурс на иконке',3),
+            resource={type='select',name='Ресурс',order=4,values=T.autoResources},
+            resourcePosition={type='select',name='Положение числа',order=4.1,
                 values={BOTTOM='Под иконкой',TOP='Над иконкой'},
                 hidden=function() return not cfg().autoAttack.showResource end},
-            replace=toggle('Заменять недоступные усиленные автоатаки',5),
-            help={type='description',order=6,name='Таймер основной руки начинается после зарегистрированного удара или промаха. При включённой замене и наличии отмеченных усилителей иконка автоатаки появляется вместо скрытых или недоступных ударов — только одна, на месте первого из них. Удар в очереди сохраняет свою иконку только при выполненных условиях. Условия ресурса и ауры имеют приоритет над очередью. Варианты с невыполненными условиями не добавляют автоатаку, если другой усиленный удар подходит по условиям. Если ни один не подходит, остаётся одна автоатака. Если усилителей нет или замена выключена, автоатака добавляется в конце списка. Для особых способностей отметьте «Заменяет / усиливает следующую автоатаку» в настройках записи. Положение значения ресурса выбирается выше; шрифт берётся из «Стаки / заряды / ресурс». До первого удара таймер не выдумывается.'}
+            replace=toggle('Заменять усилители',5),
+            help={type='description',order=6,width='full',name='Таймер оружия начинается с первого удара или промаха. Если подходящий усилитель недоступен, настройка замены показывает автоатаку. Отметить усилитель можно в редакторе записи.'}
         }}
     -- Profile settings are isolated from the DBM and from other ElvUI profiles.
     root.args.profiles={type='group',name='Профили',order=0,args={
@@ -211,23 +298,23 @@ function A:InsertAbilityOptions(parent)
             dialogControl=PROFILE_NAME_CONTROL,
             get=function() return newProfileName end,
             set=function(info,value) newProfileName=value end},
-        copyCurrent={type='execute',name='Создать копию текущего',order=4,desc='Если название не указано, копия получит имя автоматически.',
+        copyCurrent={type='execute',name='Копировать профиль',order=4,desc='Если название не указано, копия получит имя автоматически.',
             func=function()
                 local ok,message=T:CreateProfile(newProfileName,true)
                 profileMessage=message or 'Ошибка создания профиля.'
                 A:Say(profileMessage)
                 if ok then newProfileName='' end
             end},
-        createEmpty={type='execute',name='Создать пустой профиль',order=5,
+        createEmpty={type='execute',name='Новый профиль',order=5,
             func=function()
                 local ok,message=T:CreateProfile(newProfileName,false)
                 profileMessage=message or 'Ошибка создания профиля.'
                 A:Say(profileMessage)
                 if ok then newProfileName='' end
             end},
-        deleteCurrent={type='execute',name='Удалить выбранный профиль',order=6,
+        deleteCurrent={type='execute',name='Удалить профиль',order=6,
             disabled=function() return T:Profiles().selected=='__OFF__' end,
-            confirm=function() return 'Удалить выбранный профиль способностей? Его записи и настройки будут потеряны.' end,
+            confirm=function() return 'Удалить профиль способностей? Его записи и настройки будут потеряны.' end,
             func=function()
                 local selected=T:Profiles().selected
                 local _,message=T:DeleteProfile(selected)
@@ -235,7 +322,6 @@ function A:InsertAbilityOptions(parent)
             end},
         message={type='description',name=function() return profileMessage end,order=7}
     }}
-    list=root.args.tracking.args.list
     parent.abilities=root
     rebuild()
     self.RefreshAbilityOptions=function() reset(); profile=A.db; rebuild() end

@@ -735,6 +735,7 @@ function T:Apply()
     self.transitions={}
     self:Validate(); self.revision=self.revision+1
     self.auraCache={}; self.auraCacheTime=nil
+    if not self.stationary then self:RefreshVisualKeys() end
     if self.initialized then self:Tick() end
 end
 

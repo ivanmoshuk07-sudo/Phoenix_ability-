@@ -52,7 +52,7 @@ function T:TargetCountCondition(group)
 end
 
 local triggerFields={'condition','conditionResource','conditionOp','conditionValue','conditionPercent',
-    'auraCondition','auraConditionKind','auraConditionUnit','auraConditionMode','auraConditionId',
+    'auraCondition','auraConditionKind','auraConditionUnit','auraConditionMode','auraConditionId','auraConsumption',
     'targetCondition','targetOp','targetValue'}
 local function active(g) return g.condition or g.auraCondition or g.targetCondition end
 function T:NewTrigger()
@@ -94,6 +94,15 @@ function T:TriggerState(g)
     end
     return ok,reason,unknown
 end
+local function hasConsumableAura(g)
+    return g and not g.invert and g.auraCondition and g.auraConditionMode~='absent' and g.auraConditionId
+end
+
+function T:AuraConsumptionMode(g)
+    if not g.enabled or not hasConsumableAura(g) then return end
+    if g.auraConsumption=='once' or g.auraConsumption=='stack' then return g.auraConsumption end
+end
+
 local function triggerDiagnostics(self,g)
     if not g.enabled then return 'Триггер выключен.' end
     local lines={}
@@ -230,6 +239,7 @@ function T:Validate()
                 g.auraConditionKind=g.auraConditionKind=='debuff' and 'debuff' or 'buff'
                 g.auraConditionMode=g.auraConditionMode=='absent' and 'absent' or 'present'
                 g.auraConditionId=tonumber(g.auraConditionId)
+                if g.auraConsumption~='once' and g.auraConsumption~='stack' then g.auraConsumption=nil end
                 g.targetValue=math.floor(numeric(g.targetValue,2,0,50))
                 if g.targetOp~='le' and g.targetOp~='eq' then g.targetOp='ge' end
                 groups[#groups+1]=g
@@ -245,7 +255,8 @@ function T:Initialize()
     return initialize(self)
 end
 
-function T:AddRotationOptions(args,getDraft)
+function T:AddRotationOptions(args,getDraft,triggerArgs)
+    triggerArgs=triggerArgs or args
     local function p() return getDraft() end
     local function hidden() return not p() or p().kind~='spell' end
     args.showResource={type='toggle',name='Показывать ресурс под иконкой',order=7.3,hidden=hidden}
@@ -256,70 +267,149 @@ function T:AddRotationOptions(args,getDraft)
         get=function() return p() and p().replacementId and tostring(p().replacementId) or '' end,
         validate=function(_,v) local id=tonumber(v); return id and id>0 and id==math.floor(id) and id~=p().spellId and GetSpellInfo(id) and true or 'Введите ID другой существующей способности.' end,
         set=function(_,v) p().replacementId=tonumber(v) end}
-    -- The same editor is instantiated for every trigger; there is no special
-    -- first-trigger form and no ability-specific conditions.
+
     for _,key in ipairs({'condition','conditionResource','conditionOp','conditionValue','conditionPercent',
         'auraCondition','auraConditionMode','auraConditionKind','auraConditionUnit','auraConditionId','auraName'}) do args[key]=nil end
-    local function list() return p() and T:PrepareTriggers(p()) end
-    args.triggerMode={type='select',name='Активация способности',order=8,values={any='Любой триггер — ИЛИ',all='Все включённые триггеры — И',one='Только выбранный триггер'},
-        get=function() list(); return p() and p().triggerMode or 'any' end}
-    args.selectedTrigger={type='select',name='Какой триггер использовать',order=8.1,hidden=function() list(); return not p() or p().triggerMode~='one' end,
-        values=function() local v={};for i in ipairs(list() or {}) do v[i]='Триггер '..i end;return v end,
-        get=function() list();return p() and p().selectedTrigger or 1 end}
-    args.invertTriggers={type='toggle',name='НЕ: инвертировать результат активации',order=8.2,
-        get=function() list();return p() and p().invertTriggers or false end}
-    args.triggerInfo={type='description',order=8.3,name='Условия внутри каждого триггера выполняются вместе. Между триггерами выберите ИЛИ, И или конкретный номер. Пустой включённый триггер выполнен всегда. Выключенные не участвуют в И/ИЛИ. Оформление, порядок, таймер и замена общие для способности.'}
-    args.targetsNow={type='description',order=8.4,name=function()
-        local s=T:Enemies8();return 'В пределах 8 ярдов: '..s.count..'; дальность неизвестна: '..s.unknown..'.'
-    end}
-    args.triggers={type='group',name='Триггеры',order=9,guiInline=true,args={}}
-    local editors=args.triggers.args
-    editors.add={type='execute',name='Добавить пустой триггер',order=1,disabled=function() return not list() or #list()>=20 end,func=function()
-        local v=list();if v and #v<20 then local g=T:NewTrigger();g.enabled=false;v[#v+1]=g end
-    end}
-    editors.recheck={type='execute',name='Проверить сейчас',order=1.1,func=function()
+    local currentDraft,editorIndex
+    local function list()
+        local draft=p()
+        if draft~=currentDraft then
+            currentDraft=draft
+            editorIndex=1
+        end
+        if not draft then return end
+        local triggers=T:PrepareTriggers(draft)
+        editorIndex=math.max(1,math.min(#triggers,editorIndex or 1))
+        return triggers
+    end
+    local function triggerNames()
+        local values={}
+        for i,trigger in ipairs(list() or {}) do
+            values[i]='Триггер '..i..(trigger.enabled and '' or ' (выкл.)')
+        end
+        return values
+    end
+
+    triggerArgs.triggerMode={type='select',name='Правило активации',order=8,width='normal',
+        values={any='Любой включённый (ИЛИ)',all='Все включённые (И)',one='Один выбранный'},
+        get=function() list(); return p() and p().triggerMode or 'any' end,
+        set=function(_,value) if p() then p().triggerMode=value end end}
+    triggerArgs.selectedTrigger={type='select',name='Активный триггер',order=8.1,width='normal',
+        hidden=function() list(); return not p() or p().triggerMode~='one' end,values=triggerNames,
+        get=function() list(); return p() and p().selectedTrigger or 1 end,
+        set=function(_,value) if p() then p().selectedTrigger=value end end}
+    triggerArgs.legacyInversion={type='description',order=8.2,width='full',
+        name='Сохранённая инверсия правила применяется к общему результату.',
+        hidden=function() list(); return not p() or not p().invertTriggers end}
+    triggerArgs.triggerInfo={type='description',order=8.3,width='full',
+        name='Внутри триггера все включённые условия должны выполняться. Триггер без условий срабатывает всегда, если он включён.'}
+    triggerArgs.targetsNow={type='description',order=8.4,width='full',
+        hidden=function()
+            local triggers=list()
+            return not triggers or not triggers[editorIndex].targetCondition
+        end,
+        name=function()
+            local s=T:Enemies8()
+            return 'Врагов в 8 ярдах: '..s.count..'. Неизвестная дальность: '..s.unknown..'.'
+        end}
+
+    triggerArgs.triggers={type='group',name='Редактор триггеров',order=9,guiInline=true,args={}}
+    local editors=triggerArgs.triggers.args
+    editors.current={type='select',name='Редактируемый триггер',order=1,width='normal',values=triggerNames,
+        get=function() list(); return editorIndex or 1 end,
+        set=function(_,value) list(); editorIndex=value end}
+    editors.add={type='execute',name='Добавить',order=2,width='half',
+        disabled=function() return not list() or #list()>=20 end,func=function()
+            local triggers=list()
+            if triggers and #triggers<20 then
+                local trigger=T:NewTrigger()
+                trigger.enabled=false
+                triggers[#triggers+1]=trigger
+                editorIndex=#triggers
+            end
+        end}
+    editors.recheck={type='execute',name='Проверить',order=3,width='half',func=function()
         T.auraCacheTime=nil
         T.enemySample=nil
     end}
+
     for i=1,20 do
         local index=i
         local function g() local v=list(); return v and v[index] end
-        local function field(kind,name,order,values) return {type=kind,name=name,order=order,values=values} end
         local function off(key) return function() return not g() or not g()[key] end end
-        editors['trigger'..i]={type='group',name='Триггер '..i,order=i+1,guiInline=true,hidden=function() return not g() end,
+        local function toggle(name,order,desc)
+            return {type='toggle',name=name,desc=desc,order=order,width='full'}
+        end
+        local function consumptionToggle(mode,name,order,desc)
+            return {
+                type='toggle',name=name,order=order,desc=desc,
+                hidden=function() return not hasConsumableAura(g()) end,
+                get=function() local trigger=g(); return trigger and trigger.auraConsumption==mode end,
+                set=function(_,enabled)
+                    local trigger=g()
+                    if not hasConsumableAura(trigger) then return end
+                    if enabled then
+                        trigger.auraConsumption=mode
+                    elseif trigger.auraConsumption==mode then
+                        trigger.auraConsumption=nil
+                    end
+                end}
+        end
+        editors['trigger'..i]={type='group',name='Триггер '..i,order=i+3,guiInline=true,
+            hidden=function() local trigger=g(); return not trigger or editorIndex~=index end,
             get=function(info) return g() and g()[info[#info]] end,
-            set=function(info,v) if g() then g()[info[#info]]=v;T.auraCacheTime=nil end end,args={
-                enabled=field('toggle','Включить триггер',1),
-                invert=field('toggle','НЕ: условие триггера не выполнено',2),
-                copy={type='execute',name='Копировать триггер',order=3,disabled=function() return not list() or #list()>=20 end,func=function()
-                    local v=list();if v and #v<20 then v[#v+1]=T.Copy(g()) end
-                end},
-                remove={type='execute',name='Удалить триггер',order=4,disabled=function() return not list() or #list()<=1 end,func=function()
-                    local v=list();if not v or #v<=1 then return end
-                    local selected=p().selectedTrigger or 1;table.remove(v,index)
-                    if selected>index then selected=selected-1 end
-                    p().selectedTrigger=math.max(1,math.min(#v,selected))
-                end},
-                diagnostics={type='description',order=4.1,width='full',
-                    name=function() local trigger=g(); return trigger and triggerDiagnostics(T,trigger) or '' end},
-                auraCondition=field('toggle','Условие бафа / дебафа',5),
-                auraConditionKind={type='select',name='Тип эффекта',order=6,values={buff='Баф',debuff='Дебаф'},hidden=off('auraCondition')},
-                auraConditionUnit={type='select',name='На ком',order=7,values={player='Игрок',target='Цель'},hidden=off('auraCondition')},
-                auraConditionMode={type='select',name='Наличие',order=8,values={present='Есть',absent='Нет'},hidden=off('auraCondition')},
-                auraConditionId={type='input',name='ID эффекта',order=9,hidden=off('auraCondition'),get=function() return g() and g().auraConditionId and tostring(g().auraConditionId) or '' end,
-                    validate=function(_,v) local id=tonumber(v);return id and id>0 and id==math.floor(id) and GetSpellInfo(id) and true or 'Введите ID эффекта.' end,
-                    set=function(_,v) g().auraConditionId=tonumber(v);T.auraCacheTime=nil end},
-                auraName={type='description',order=9.1,hidden=off('auraCondition'),name=function() return g() and g().auraConditionId and (GetSpellInfo(g().auraConditionId) or 'Эффект не найден.') or 'Укажите ID эффекта.' end},
-                condition=field('toggle','Условие ресурса',10),
-                conditionResource={type='select',name='Ресурс',order=11,values=T.resources,hidden=off('condition')},
-                conditionOp={type='select',name='Сравнение ресурса',order=12,values={ge='Не меньше',le='Не больше',eq='Равно'},hidden=off('condition')},
-                conditionValue={type='input',name='Значение ресурса',order=13,hidden=off('condition'),get=function() return tostring(g() and g().conditionValue or 0) end,
-                    validate=function(_,v) local n=tonumber(v);return n and n==n and math.abs(n)<=1000000000 and true or 'Введите число.' end,
+            set=function(info,v) if g() then g()[info[#info]]=v; T.auraCacheTime=nil end end,args={
+                enabled=toggle('Включить триггер',1),
+                copy={type='execute',name='Копировать',order=2,width='normal',
+                    disabled=function() return not list() or #list()>=20 end,func=function()
+                        local triggers=list()
+                        if triggers and #triggers<20 then
+                            triggers[#triggers+1]=T.Copy(triggers[index])
+                            editorIndex=#triggers
+                        end
+                    end},
+                remove={type='execute',name='Удалить',order=3,width='normal',
+                    disabled=function() return not list() or #list()<=1 end,func=function()
+                        local triggers=list()
+                        if not triggers or #triggers<=1 then return end
+                        local selected=p().selectedTrigger or 1
+                        table.remove(triggers,index)
+                        if selected>index then selected=selected-1 end
+                        p().selectedTrigger=math.max(1,math.min(#triggers,selected))
+                        editorIndex=math.min(index,#triggers)
+                    end},
+                legacyInversion={type='description',order=4,width='full',
+                    name='Сохранённая инверсия этого триггера применяется к его результату.',hidden=off('invert')},
+
+                auraCondition=toggle('Баф / дебаф',10,'Проверить наличие или отсутствие эффекта по ID.'),
+                auraConditionKind={type='select',name='Тип эффекта',order=11,values={buff='Баф',debuff='Дебаф'},hidden=off('auraCondition')},
+                auraConditionUnit={type='select',name='На ком',order=12,values={player='Игрок',target='Цель'},hidden=off('auraCondition')},
+                auraConditionMode={type='select',name='Наличие',order=13,values={present='Есть',absent='Нет'},hidden=off('auraCondition')},
+                auraConditionId={type='input',name='ID эффекта',order=14,hidden=off('auraCondition'),get=function() return g() and g().auraConditionId and tostring(g().auraConditionId) or '' end,
+                    validate=function(_,v) local id=tonumber(v); return id and id>0 and id==math.floor(id) and GetSpellInfo(id) and true or 'Введите ID эффекта.' end,
+                    set=function(_,v) g().auraConditionId=tonumber(v); T.auraCacheTime=nil end},
+                auraName={type='description',order=15,width='full',hidden=off('auraCondition'),name=function() return g() and g().auraConditionId and (GetSpellInfo(g().auraConditionId) or 'Эффект не найден.') or 'Укажите ID эффекта.' end},
+
+                auraOnce=consumptionToggle('once','Одно применение',16,
+                    'В прогнозе полосы одно применение расходует эффект целиком.'),
+                auraByStacks=consumptionToggle('stack','По стакам',17,
+                    'В прогнозе полосы одно применение расходует один стак. Эффект без стаков даёт одно применение.'),
+
+                condition=toggle('Ресурс',20,'Сравнить текущее количество ресурса с заданным значением.'),
+                conditionResource={type='select',name='Тип ресурса',order=21,values=T.resources,hidden=off('condition')},
+                conditionOp={type='select',name='Сравнение',order=22,values={ge='Не меньше',le='Не больше',eq='Равно'},hidden=off('condition')},
+                conditionValue={type='input',name='Значение',order=23,hidden=off('condition'),get=function() return tostring(g() and g().conditionValue or 0) end,
+                    validate=function(_,v) local n=tonumber(v); return n and n==n and math.abs(n)<=1000000000 and true or 'Введите число.' end,
                     set=function(_,v) g().conditionValue=tonumber(v) end},
-                conditionPercent={type='toggle',name='В процентах',order=14,hidden=off('condition')},
-                targetCondition=field('toggle','Количество врагов в 8 ярдах',15),
-                targetOp={type='select',name='Сравнение целей',order=16,values={ge='Не меньше',le='Не больше',eq='Равно'},hidden=off('targetCondition')},
-                targetValue={type='range',name='Количество целей',order=17,min=0,max=50,step=1,hidden=off('targetCondition')}
+                conditionPercent={type='toggle',name='В процентах',order=24,hidden=off('condition')},
+
+                targetCondition=toggle('Враги в 8 ярдах',30,'Проверить количество ближайших врагов.'),
+                targetOp={type='select',name='Сравнение',order=31,values={ge='Не меньше',le='Не больше',eq='Равно'},hidden=off('targetCondition')},
+                targetValue={type='range',name='Количество врагов',order=32,min=0,max=50,step=1,hidden=off('targetCondition')},
+
+                diagnosticsTitle={type='header',name='Результат проверки',order=40},
+                diagnostics={type='description',order=41,width='full',
+                    name=function() local trigger=g(); return trigger and triggerDiagnostics(T,trigger) or '' end}
             }}
     end
 end
