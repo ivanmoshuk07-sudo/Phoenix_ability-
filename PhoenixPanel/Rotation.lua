@@ -167,7 +167,7 @@ function T:Evaluate(p,inspect,noReplacement)
         if id and id~=p.spellId then
             local replacement=self:Find(id,'spell')
             if replacement then
-                replacement.uid=p.uid; replacement.checkRange=false
+                replacement.uid=p.uid; replacement.checkRange=p.checkRange
                 local r=self:Evaluate(replacement,true,true)
                 if r.available and not r.applicationBlocked and not r.queued then
                     r.id=item.id; r.replacement=true; r.originalSpellId=p.spellId

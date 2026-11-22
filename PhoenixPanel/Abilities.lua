@@ -26,6 +26,16 @@ local textures={mana='Interface\\Icons\\INV_Potion_76',rage='Interface\\Icons\\A
 textures.happiness='Interface\\Icons\\Ability_Hunter_BeastCall'
 textures.targethealth=textures.health
 local function apiTrue(value) return value==true or value==1 end
+
+local function spellOutOfRange(id,name)
+    if not name or (UnitExists and not apiTrue(UnitExists('target'))) then return false end
+    local spellRange=E.Libs and E.Libs.SpellRange
+    local range
+    if spellRange and spellRange.IsSpellInRange then range=spellRange.IsSpellInRange(id,'target') end
+    if range==nil and IsSpellInRange then range=IsSpellInRange(name,'target') end
+    return range==0 or range==false
+end
+
 function T:Config() return A.db.abilities end
 
 function T:Validate()
@@ -269,9 +279,15 @@ function T:Evaluate(p,inspect)
                 if charges<maxCharges and cs and cd and cd>0 then start=cs; duration=cd; ownCD=true; paused=false end
             end
         end
-        if p.checkRange and IsSpellInRange then
-            local name=GetSpellInfo(p.spellId)
-            if IsSpellInRange(name,'target')==0 then item.available=false; item.reason='Цель вне дальности.'; item.applicationBlocked=true; item.outOfRange=true end
+        if p.checkRange and known and spellOutOfRange(p.spellId,name) then
+            item.outOfRange=true
+            -- Range is a visual warning in the dynamic queue. Keep its
+            -- ordering and visibility based on the spell's other checks.
+            if self.stationary then
+                item.available=false
+                item.reason='Цель вне дальности.'
+                item.applicationBlocked=true
+            end
         end
         if ownCD then item.total=duration; item.remaining=paused and duration or math.max(0,start+duration-GetTime()); item.paused=paused end
         item.ownRemaining=ownCD and not paused and math.max(0,start+duration-GetTime()) or 0
@@ -284,9 +300,9 @@ function T:Evaluate(p,inspect)
         item.prioritySoon=ownCD and not paused and gcdLeft>0
             and item.ownRemaining>0 and item.ownRemaining<=gcdLeft
         -- Resource shortage does not cancel the "move to front" checkbox.
-        -- Keep the existing range, learned-spell, proc and cooldown checks.
+        -- Learned-spell, proc and cooldown checks still control forecast eligibility.
         item.priorityCanCast=known and (usable or lacksResource)
-            and not item.applicationBlocked and not item.outOfRange
+            and not item.applicationBlocked
         -- This marker is only used for display ordering: an old-style
         -- priority candidate still waiting past the current GCD must not
         -- remain in front of another already usable spell.
@@ -515,8 +531,8 @@ function T:Render(plate,items)
             icon.keepAspect=cfg.keepAspect
         end
         local dark=item.applicationBlocked and not item.noResource and not item.queued
-        local desaturated=(not dark and item.procBlocked)
-            or (cfg.desaturate and item.fade and (not dark or (item.gcdActive and not item.outOfRange))) or false
+        local desaturated=not item.outOfRange and ((not dark and item.procBlocked)
+            or (cfg.desaturate and item.fade and (not dark or item.gcdActive))) or false
         if icon.desaturated~=desaturated then icon.texture:SetDesaturated(desaturated); icon.desaturated=desaturated end
         local tint=item.outOfRange and 'range' or (dark and 'unusable' or (item.noResource and 'resource' or 'normal'))
         if icon.tint~=tint then

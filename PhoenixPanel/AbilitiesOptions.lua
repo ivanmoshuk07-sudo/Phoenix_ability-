@@ -167,12 +167,14 @@ function A:InsertAbilityOptions(parent)
     local function entryStatus()
         if not draft then return '' end
         local state=T:Evaluate(draft,true)
+        local range=state.outOfRange and ' Цель вне дальности.' or ''
         if stripMode() and draft.kind=='spell' and state.noResource and state.conditionPassed
             and not T:NextSwingEntry(draft) and T:StripSpellReadyAt(state)<math.huge then
-            return 'Участвует в прогнозе. Недостаточно ресурса.'
+            return 'Участвует в прогнозе. Недостаточно ресурса.'..range
         end
         if not state.visible then return 'Сейчас скрыто. '..(state.hiddenReason or state.reason or 'Запись скрыта настройками показа.') end
-        return 'Условия показа выполнены. '..(state.reason or state.conditionText or '')
+        local detail=state.reason or state.conditionText
+        return 'Условия показа выполнены.'..(detail and ' '..detail or '')..range
     end
     local function saveEntry()
         if not draft then return end
@@ -200,7 +202,7 @@ function A:InsertAbilityOptions(parent)
             hidden=function() return not draft or draft.kind=='spell' or draft.resource=='targethealth' end},
         showGCD={type='toggle',name='Показывать ГКД',order=4,width=1.1,hidden=spellOnly},
         checkRange={type='toggle',name='Дальность до цели',order=5,width=1.2,
-            desc='Учитывать дальность при показе доступности способности.',hidden=spellOnly},
+            desc='Окрашивать иконку красным, когда цель вне дальности. Порядок показа сохраняется.',hidden=spellOnly},
         onlyMine={type='toggle',name='Только мои ауры',order=5.1,width=1.15,hidden=auraOnly},
         resourcePercent={type='toggle',name='В процентах',order=5.2,width=1.1,hidden=resourceOnly},
         priorityTitle={type='header',name='Приоритет',order=6,hidden=function() return not draft or draft.kind=='resource' end},

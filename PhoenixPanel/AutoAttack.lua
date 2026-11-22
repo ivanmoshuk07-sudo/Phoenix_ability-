@@ -136,14 +136,15 @@ function T:Transition(p,item)
     local previous=self.transitions[p.uid]
     if not previous or previous.identity~=identity then previous={identity=identity}; self.transitions[p.uid]=previous end
     local cfg=self:Config().flashes
-    if p.kind=='spell' and cfg.cooldown and previous.cooling and not item.ownPaused and not item.ownEnd and item.available and item.conditionPassed and not item.queued then
+    local ready=item.available and not item.outOfRange
+    if p.kind=='spell' and cfg.cooldown and previous.cooling and not item.ownPaused and not item.ownEnd and ready and item.conditionPassed and not item.queued then
         previous.flashUntil=now+1.2
     elseif p.kind=='debuff' and cfg.debuff and previous.auraEnd and previous.auraEnd>0 and previous.auraEnd<=now and not item.available and item.canApply and item.conditionPassed then
         previous.flashUntil=now+1.2
     end
     previous.cooling=item.ownEnd~=nil
     previous.auraEnd=item.available and item.auraEnd or nil
-    if (p.kind=='spell' and (not item.available or item.queued)) or (p.kind=='debuff' and (not item.canApply or item.available)) or not item.conditionPassed then previous.flashUntil=nil end
+    if (p.kind=='spell' and (not ready or item.queued)) or (p.kind=='debuff' and (not item.canApply or item.available)) or not item.conditionPassed then previous.flashUntil=nil end
     item.flash=previous.flashUntil and previous.flashUntil>now or false
     if item.flash and item.conditionPassed then item.visible=true end
 end
