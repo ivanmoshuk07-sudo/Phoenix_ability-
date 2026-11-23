@@ -14,7 +14,8 @@ end
 
 function A:OpenOptions()
     if InCombatLockdown() then self:Say('Откройте настройки после боя.'); return end
-    E:ToggleOptionsUI('phoenixPanel')
+    local toggleOptions=E.ToggleOptions or E.ToggleOptionsUI
+    toggleOptions(E,'phoenixPanel')
 end
 
 SLASH_PHOENIXPANEL1='/phoenixpanel'
