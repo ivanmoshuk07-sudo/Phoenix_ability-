@@ -83,9 +83,10 @@ function A:AbilityAppearanceOptions(panel,orderDescription,isDisabled)
 end
 
 function A:InsertStationaryOptions(parent)
-    local profile
+    local profile=S:Config()
     local kind,idText='spell',''
     local selected,draft,editing,status
+    local deleteProfile,deleteUID
     local function reset()
         draft,editing,status=nil,nil,nil
     end
@@ -100,18 +101,23 @@ function A:InsertStationaryOptions(parent)
         end
         return entry.name or ('Заклинание #'..entry.spellId)
     end
+    local function syncProfile()
+        if profile==S:Config() then return false end
+        profile=S:Config()
+        selected=nil
+        kind,idText='spell',''
+        reset()
+        return true
+    end
     local function refresh()
-        if profile~=A.db then
-            profile=A.db
-            selected=nil
-            reset()
-        end
+        syncProfile()
         if not locate(selected) then
             local first=S:Config().entries[1]
             selected=first and first.uid
         end
     end
     local function move(delta)
+        if syncProfile() then return end
         local position=locate(selected)
         if position then S:Move(position,delta) end
     end
@@ -134,6 +140,7 @@ function A:InsertStationaryOptions(parent)
             end,
             get=function() refresh(); return selected end,
             set=function(_,uid)
+                if syncProfile() then return end
                 if editing and editing~=uid then reset() end
                 selected=uid
             end},
@@ -141,6 +148,7 @@ function A:InsertStationaryOptions(parent)
             hidden=function() return not locate(selected) end,
             get=function() local _,entry=locate(selected); return entry and entry.enabled end,
             set=function(_,value)
+                if syncProfile() then return end
                 local _,entry=locate(selected)
                 if entry then
                     entry.enabled=value
@@ -150,6 +158,7 @@ function A:InsertStationaryOptions(parent)
             end},
         edit={type='execute',name='Изменить',order=4,width='half',
             hidden=function() return not locate(selected) end,func=function()
+                if syncProfile() then return end
                 local _,entry=locate(selected)
                 if not entry then return end
                 draft=S.Copy(entry)
@@ -164,15 +173,27 @@ function A:InsertStationaryOptions(parent)
         down={type='execute',name='Ниже',order=6,width='half',
             hidden=function() return not locate(selected) end,
             disabled=function() return locate(selected)==#S:Config().entries end,func=function() move(1) end},
-        delete={type='execute',name='Удалить',order=7,width='half',confirm=true,
-            hidden=function() return not locate(selected) end,func=function()
-                local position=locate(selected)
+        delete={type='execute',name='Удалить',order=7,width='half',
+            hidden=function() return not locate(selected) end,
+            confirm=function()
+                syncProfile()
+                deleteProfile,deleteUID=profile,selected
+                local _,entry=locate(deleteUID)
+                return entry and ('Удалить «'..entryName(entry)..'»?') or true
+            end,
+            func=function()
+                local confirmedProfile,uid=deleteProfile,deleteUID
+                deleteProfile,deleteUID=nil,nil
+                if confirmedProfile~=S:Config() or not uid then return end
+                local position=locate(uid)
                 if not position then return end
-                if editing==selected then reset() end
+                if editing==uid then reset() end
                 S:Delete(position)
-                local entries=S:Config().entries
-                local nextEntry=entries[position] or entries[#entries]
-                selected=nextEntry and nextEntry.uid
+                if selected==uid then
+                    local entries=S:Config().entries
+                    local nextEntry=entries[position] or entries[#entries]
+                    selected=nextEntry and nextEntry.uid
+                end
             end}
     }}
 
@@ -186,6 +207,7 @@ function A:InsertStationaryOptions(parent)
             id={type='input',name=function() return kind=='item' and 'ID предмета' or 'ID заклинания' end,order=2,
                 get=function() return idText end,set=function(_,value) idText=value; reset() end},
             find={type='execute',name='Найти',order=3,width='half',func=function()
+                syncProfile()
                 local found,err=S:Find(idText,kind)
                 draft,editing,status=found,nil,err
             end},
@@ -203,7 +225,7 @@ function A:InsertStationaryOptions(parent)
                     checkRange={type='toggle',name='Проверять дальность',order=5,hidden=hideSpellFields},
                     save={type='execute',order=6,name=function() return editing and 'Сохранить' or 'Добавить' end,
                         func=function()
-                            if not draft then return end
+                            if syncProfile() or not draft then return end
                             local index=editing and locate(editing)
                             if editing and not index then reset(); status='Запись уже удалена.'; return end
                             S:Save(draft,index)

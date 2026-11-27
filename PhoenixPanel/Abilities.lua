@@ -790,7 +790,7 @@ function T:Initialize()
     end)
 end
 
--- Independent ability presets inside the *current* ElvUI profile.
+-- Panel presets inside the current ElvUI profile.
 -- Existing v0.10.3 abilities become "Основной" without resetting any entry.
 local A=PhoenixPanel
 local T=A.Abilities
@@ -808,6 +808,11 @@ local function validName(name)
     if #name>96 then return nil,'Название профиля слишком длинное.' end
     if name==OFF or name=='Выключить' then return nil,'Это название зарезервировано.' end
     return name
+end
+
+local function bindPanels(state,name)
+    A.db.abilities=state.presets[name]
+    A.db.stationary=state.stationaryPresets[name]
 end
 
 -- Must run after A.Fill but before the active ability configuration is used.
@@ -831,16 +836,20 @@ function T:PrepareProfiles()
     if type(state.selected)~='string' then state.selected=fallback end
     if state.selected~=OFF and type(state.presets[state.selected])~='table' then state.selected=fallback end
     if type(state.last)~='string' or type(state.presets[state.last])~='table' then state.last=fallback end
-    -- A.Fill() only normalizes db.abilities at ElvUI profile binding.
-    -- Ability presets are separate saved tables; they may be missing nested
-    -- text/appearance fields (e.g. appearance.count or .duration) after an
-    -- older build or an interrupted migration. Fill only missing defaults
-    -- in EACH preset, preserving all saved spells, triggers and preferences.
-    for _,preset in pairs(state.presets) do
-        if type(preset)=='table' then A.Fill(preset,A.defaults.abilities) end
+    if type(state.stationaryPresets)~='table' then state.stationaryPresets={} end
+    -- Older builds had one stationary configuration in each ElvUI profile.
+    -- Copy it into each migrated preset so future edits are independent.
+    for name,preset in pairs(state.presets) do
+        if type(preset)=='table' then
+            A.Fill(preset,A.defaults.abilities)
+            if type(state.stationaryPresets[name])~='table' then
+                state.stationaryPresets[name]=copy(db.stationary)
+            end
+            A.Fill(state.stationaryPresets[name],A.defaults.stationary)
+        end
     end
     local active=state.selected~=OFF and state.selected or state.last
-    db.abilities=state.presets[active]
+    bindPanels(state,active)
     return state
 end
 
@@ -864,7 +873,9 @@ end
 
 local function refresh()
     T:Apply()  -- instantly refresh shown icons and all active calculations
+    A.Stationary:Apply()
     if A.RefreshAbilityOptions then A.RefreshAbilityOptions() end
+    if A.RefreshStationaryOptions then A.RefreshStationaryOptions() end
     -- Do not call AceConfigRegistry:NotifyChange here.  When an AceConfig
     -- button is being processed, ElvUI's AceConfigDialog reopens the panel
     -- itself AFTER the callback returns.  A second, nested refresh can
@@ -874,12 +885,10 @@ end
 function T:SelectProfile(name)
     local state=self:Profiles()
     if name~=OFF and type(state.presets[name])~='table' then return false end
-    -- The selected profile is a live table: edits are saved immediately.
-    if state.selected~=OFF then state.presets[state.selected]=A.db.abilities end
     state.selected=name
     if name~=OFF then
         state.last=name
-        A.db.abilities=state.presets[name]
+        bindPanels(state,name)
     end
     refresh()
     return true
@@ -903,22 +912,14 @@ function T:CreateProfile(rawName,duplicate)
     local name,err=validName(rawName)
     if not name then return false,err end
     if state.presets[name]~=nil then return false,'Профиль с таким названием уже существует.' end
-    -- Include appearance/autoattack/flashes as well as entries in each preset.
-    local source=duplicate and A.db.abilities or A.defaults.abilities
-    local preset=self.Copy(source)
-    A.Fill(preset,A.defaults.abilities)
-    state.presets[name]=preset
+    state.presets[name]=copy(duplicate and A.db.abilities or A.defaults.abilities)
+    state.stationaryPresets[name]=copy(duplicate and A.db.stationary or A.defaults.stationary)
     -- Make the new profile active directly. Calling SelectProfile() here
     -- re-enters PrepareProfiles() before the UI handler has finished and
     -- can cause a second AceConfig refresh from inside its first callback.
     state.selected=name
     state.last=name
-    A.db.abilities=preset
-    -- Verify that creation is visible through the same profile storage
-    -- used by the live panel; do not report success for an absent preset.
-    if state.presets[name]~=A.db.abilities then
-        return false,'Не удалось активировать новый профиль.'
-    end
+    bindPanels(state,name)
     refresh()
     return true,'Создан профиль «'..name..'».'
 end
@@ -938,9 +939,10 @@ function T:DeleteProfile(name)
         end
         state.selected=nextName
         state.last=nextName
-        A.db.abilities=state.presets[nextName]
+        bindPanels(state,nextName)
     end
     state.presets[name]=nil
+    state.stationaryPresets[name]=nil
     refresh()
     return true,'Профиль «'..name..'» удалён.'
 end

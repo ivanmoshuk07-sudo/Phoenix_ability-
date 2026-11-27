@@ -2,29 +2,7 @@ local A=PhoenixPanel
 local E=ElvUI[1]
 local T=A.Abilities
 
--- Only this profile-name input needs live typing. AceConfig's regular input
--- commits on Enter; custom textChanged inside an option is INVALID in AceConfig.
--- Use the supported dialogControl API to listen to its *own* edit box, without
--- patching ElvUI's widgets or guessing their global names.
-local profileNameTyping
-local PROFILE_NAME_CONTROL='PhoenixPanelProfileNameInput'
 local VISUAL_KEY_CONTROL='PhoenixPanelVisualKey'
-local function RegisterProfileNameControl()
-    local gui=E.Libs and E.Libs.AceGUI
-    if not gui or gui:GetWidgetVersion(PROFILE_NAME_CONTROL) then return end
-    gui:RegisterWidgetType(PROFILE_NAME_CONTROL,function()
-        -- Reuse the original ElvUI input behavior (Enter, focus, OK button).
-        local widget=gui:Create('EditBox-ElvUI')
-        widget.type=PROFILE_NAME_CONTROL
-        widget.editbox:HookScript('OnTextChanged',function(editbox,isUserInput)
-            -- Do not treat AceConfig's SetText during a redraw as user typing.
-            if isUserInput and editbox:HasFocus() and profileNameTyping then
-                profileNameTyping(editbox:GetText())
-            end
-        end)
-        return widget
-    end,1)
-end
 
 local function RegisterVisualKeyControl()
     local gui=E.Libs and E.Libs.AceGUI
@@ -70,8 +48,6 @@ function T:Render(plate,items)
     end
 end
 
-local kind,spellText,resource='spell','','current'
-local draft,editing,status
 local function cfg() return A.db.abilities end
 local function toggle(name,order) return {type='toggle',name=name,order=order} end
 local function locate(uid)
@@ -79,28 +55,35 @@ local function locate(uid)
 end
 
 function A:InsertAbilityOptions(parent)
-    -- Editing a draft cannot leak into a different ElvUI profile.
-    local profile=A.db
+    local profile=cfg()
+    local kind,spellText,resource='spell','','current'
+    local draft,editing,status
     local root,list
-    local newProfileName=''
-    local profileMessage=''
-    -- Only the focused profile-name widget updates this variable while typing.
-    -- The normal AceConfig 'set' callback still handles Enter/OK.
-    profileNameTyping=function(value) newProfileName=value end
-    RegisterProfileNameControl()
     local visualKeyControl=RegisterVisualKeyControl()
     local function isOff() return T:IsProfileOff() end
     local function stripMode() return cfg().panelMode=='strip' end
     local function reset() draft=nil; editing=nil; status=nil end
+    local function syncProfile()
+        if profile==cfg() then return false end
+        profile=cfg()
+        reset()
+        kind,spellText,resource='spell','','current'
+        return true
+    end
     local function selectEditor()
         if E.Libs.AceConfigDialog then
             E.Libs.AceConfigDialog:SelectGroup('ElvUI','phoenixPanel','abilities','tracking','editor')
         end
     end
     local function rebuild()
-        if profile~=A.db then profile=A.db; reset() end
+        syncProfile()
+        local listProfile=profile
+        local function locateListed(uid)
+            if cfg()==listProfile and not isOff() then return locate(uid) end
+        end
         local args={}
         args.add={type='execute',name='Добавить запись',order=0,width=1.2,func=function()
+            if cfg()~=listProfile or isOff() then return end
             reset()
             spellText=''
             selectEditor()
@@ -115,10 +98,10 @@ function A:InsertAbilityOptions(parent)
                     image=function() return (p.spellId and select(3,GetSpellInfo(p.spellId))) or p.icon or 'Interface\\Icons\\INV_Misc_QuestionMark' end,
                     arg={spellId=p.spellId,text=name},dialogControl=p.kind~='resource' and A.DBM.spellWidgetRegistered and 'PhoenixPanelSpellCheck' or nil,
                     desc=p.kind=='resource' and 'Индикатор выбранного ресурса.' or ('Игровое описание: '..tostring(p.spellId)),
-                    get=function() local _,entry=locate(uid); return entry and entry.enabled end,
-                    set=function(info,value) local _,entry=locate(uid); if entry then entry.enabled=value; T:Apply() end end},
+                    get=function() local _,entry=locateListed(uid); return entry and entry.enabled end,
+                    set=function(info,value) local _,entry=locateListed(uid); if entry then entry.enabled=value; T:Apply() end end},
                 edit={type='execute',name='Изменить',order=2,width=0.73,func=function()
-                    local _,entry=locate(uid)
+                    local _,entry=locateListed(uid)
                     if entry then
                         draft=T.Copy(entry); editing=uid; kind=entry.kind
                         spellText=tostring(entry.spellId or ''); resource=entry.resource or 'current'
@@ -129,21 +112,21 @@ function A:InsertAbilityOptions(parent)
                 pressKey={type='keybinding',name=visualKeyControl and '' or 'Назначить клавишу',order=2.1,width=1.2,
                     dialogControl=visualKeyControl,hidden=p.kind~='spell',disabled=InCombatLockdown,
                     desc='Эффект нажатия для этой записи при использовании выбранной клавиши. Esc снимает назначение в PhoenixPanel.',
-                    get=function() local _,entry=locate(uid); return entry and entry.pressKey or '' end,
+                    get=function() local _,entry=locateListed(uid); return entry and entry.pressKey or '' end,
                     validate=function(_,value)
                         return value=='' or T:CanObserveVisualKey(value) or 'Выберите клавишу, назначенную на кнопку панели WoW или ElvUI.'
                     end,
                     set=function(_,value)
-                        local _,entry=locate(uid)
+                        local _,entry=locateListed(uid)
                         if not entry then return end
                         entry.pressKey=value~='' and value or nil
                         if draft and editing==uid then draft.pressKey=entry.pressKey end
                         T:RefreshVisualKeys()
                     end},
-                up={type='execute',name='Выше',order=3,width=0.53,disabled=function() return locate(uid)==1 end,func=function() local index=locate(uid); if index then T:Move(index,-1); rebuild() end end},
-                down={type='execute',name='Ниже',order=4,width=0.53,disabled=function() return locate(uid)==#cfg().entries end,func=function() local index=locate(uid); if index then T:Move(index,1); rebuild() end end},
+                up={type='execute',name='Выше',order=3,width=0.53,disabled=function() return locateListed(uid)==1 end,func=function() local index=locateListed(uid); if index then T:Move(index,-1); rebuild() end end},
+                down={type='execute',name='Ниже',order=4,width=0.53,disabled=function() return locateListed(uid)==#cfg().entries end,func=function() local index=locateListed(uid); if index then T:Move(index,1); rebuild() end end},
                 delete={type='execute',name='Удалить',order=5,width=0.69,confirm=true,func=function()
-                    local index=locate(uid); if index then T:Delete(index); if editing==uid then reset() end; rebuild() end
+                    local index=locateListed(uid); if index then T:Delete(index); if editing==uid then reset() end; rebuild() end
                 end}
             }}
         end
@@ -177,7 +160,7 @@ function A:InsertAbilityOptions(parent)
         return 'Условия показа выполнены.'..(detail and ' '..detail or '')..range
     end
     local function saveEntry()
-        if not draft then return end
+        if syncProfile() or isOff() or not draft then return end
         for i,g in ipairs(T:PrepareTriggers(draft)) do
             if g.enabled and g.auraCondition and (not g.auraConditionId or not GetSpellInfo(g.auraConditionId)) then
                 status='Триггер '..i..' — укажите ID существующего эффекта.'
@@ -295,42 +278,10 @@ function A:InsertAbilityOptions(parent)
             replace=toggle('Заменять усилители',5),
             help={type='description',order=6,width='full',name='Таймер оружия начинается с первого удара или промаха. Если подходящий усилитель недоступен, настройка замены показывает автоатаку. Отметить усилитель можно в редакторе записи.'}
         }}
-    -- Profile settings are isolated from the DBM and from other ElvUI profiles.
-    root.args.profiles={type='group',name='Профили',order=0,args={
-        info={type='description',order=1,name='Каждый профиль хранит собственный список способностей, триггеры, оформление и автоатаку. Изменения выбранного профиля сохраняются автоматически. При выборе «Выключить» панель скрывается, а профили остаются.'},
-        current={type='select',name='Активный профиль',order=2,width='full',
-            values=function() return T:ProfileOptions() end,
-            get=function() return T:Profiles().selected end,
-            set=function(info,value) T:SelectProfile(value); profileMessage=''; end},
-        createName={type='input',name='Название нового профиля (для копии необязательно)',order=3,width='full',
-            dialogControl=PROFILE_NAME_CONTROL,
-            get=function() return newProfileName end,
-            set=function(info,value) newProfileName=value end},
-        copyCurrent={type='execute',name='Копировать профиль',order=4,desc='Если название не указано, копия получит имя автоматически.',
-            func=function()
-                local ok,message=T:CreateProfile(newProfileName,true)
-                profileMessage=message or 'Ошибка создания профиля.'
-                A:Say(profileMessage)
-                if ok then newProfileName='' end
-            end},
-        createEmpty={type='execute',name='Новый профиль',order=5,
-            func=function()
-                local ok,message=T:CreateProfile(newProfileName,false)
-                profileMessage=message or 'Ошибка создания профиля.'
-                A:Say(profileMessage)
-                if ok then newProfileName='' end
-            end},
-        deleteCurrent={type='execute',name='Удалить профиль',order=6,
-            disabled=function() return T:Profiles().selected=='__OFF__' end,
-            confirm=function() return 'Удалить профиль способностей? Его записи и настройки будут потеряны.' end,
-            func=function()
-                local selected=T:Profiles().selected
-                local _,message=T:DeleteProfile(selected)
-                profileMessage=message or ''
-            end},
-        message={type='description',name=function() return profileMessage end,order=7}
-    }}
     parent.abilities=root
     rebuild()
-    self.RefreshAbilityOptions=function() reset(); profile=A.db; rebuild() end
+    self.RefreshAbilityOptions=function()
+        reset()
+        rebuild()
+    end
 end
